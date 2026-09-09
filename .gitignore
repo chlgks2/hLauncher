@@ -1,0 +1,20 @@
+# Build output
+/dist/
+
+# Go
+*.exe
+*.exe~
+*.test
+*.out
+
+# Keep the generated resource object (needed to build the GUI/manifest/icon)
+!cmd/hlauncher/rsrc_windows_386.syso
+
+# Original kLauncher proprietary assets — do NOT redistribute (third-party,
+# signed binaries). Kept locally for building; excluded from the repo.
+Library/
+Etc/
+
+# OS
+Thumbs.db
+Desktop.ini
