@@ -18,6 +18,7 @@ import (
 	"github.com/hlauncher/hlauncher/internal/core/pipe"
 	"github.com/hlauncher/hlauncher/internal/detect"
 	"github.com/hlauncher/hlauncher/internal/identity"
+	"github.com/hlauncher/hlauncher/internal/recents"
 	"github.com/hlauncher/hlauncher/internal/inject"
 	"github.com/hlauncher/hlauncher/internal/launch"
 	"github.com/hlauncher/hlauncher/internal/registry"
@@ -58,6 +59,10 @@ type App struct {
 	Detect   *detect.Engine
 	Black    *blacklist.List
 	Identity *identity.Store
+	Recents  *recents.Store
+
+	selfTag        string    // the local player's battleTag (to exclude from recents)
+	lastRecentSave time.Time // throttles recents disk writes
 
 	backend  InjectBackend
 	injector *inject.InjectorDLL // non-nil only for BackendInjectorDLL
@@ -93,6 +98,7 @@ type App struct {
 
 	roomStop  chan struct{}
 	roomDone  chan struct{}
+	roomWake  chan struct{} // forces an immediate room scan (manual refresh)
 	seenBlack map[string]bool // per-room-session: alerted black identifiers
 	lastSCPID uint32
 
@@ -161,6 +167,7 @@ func New() (*App, error) {
 	a.seenBlack = make(map[string]bool)
 	a.roomStop = make(chan struct{})
 	a.roomDone = make(chan struct{})
+	a.roomWake = make(chan struct{}, 1)
 	a.capStop = make(chan struct{})
 	a.capDone = make(chan struct{})
 
@@ -172,6 +179,13 @@ func New() (*App, error) {
 		idStore, _ = identity.Load("")
 	}
 	a.Identity = idStore
+
+	rec, err := recents.Load(filepath.Join(p.DataDir, "recents.json"))
+	if err != nil {
+		a.logf("warn", "recents 로드 실패: %v", err)
+		rec, _ = recents.Load("")
+	}
+	a.Recents = rec
 
 	// KLauncherPipe server: kDetector connects here after injection and expects
 	// the set_detector_path / send_token handshake, or it terminates the game.
@@ -244,6 +258,14 @@ func (a *App) AddBlack(battleTag, name, reason string) error {
 // RemoveBlack removes a blacklist entry by its identifier.
 func (a *App) RemoveBlack(id string) error { return a.Black.Remove(id) }
 
+// RemoveRecent deletes an entry from the recent-players history by its key.
+func (a *App) RemoveRecent(key string) {
+	if a.Recents != nil {
+		a.Recents.Remove(key)
+		_ = a.Recents.Save()
+	}
+}
+
 // CurrentRoster reads the current room participants (empty if not in a room).
 func (a *App) CurrentRoster() []roster.Participant {
 	st := a.Status()
@@ -278,23 +300,40 @@ func (a *App) roomLoop() {
 	interval := fast
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
+	// Scan once, then pace by screen: fast in a lobby, medium in the channel (so
+	// we keep capturing join events), slow in-game where no lobby/chat data flows.
+	scanAndPace := func() {
+		switch a.scanRoom() {
+		case roster.StateLobby:
+			interval = fast
+		case roster.StateChannel:
+			interval = mid
+		default:
+			interval = slow
+		}
+		timer.Reset(interval)
+	}
 	for {
 		select {
 		case <-a.roomStop:
 			return
+		case <-a.roomWake: // manual refresh: scan immediately
+			scanAndPace()
 		case <-timer.C:
-			// Pace by screen: fast in a lobby, medium in the channel (so we still
-			// capture join events), slow in-game where no lobby/chat data exists.
-			switch a.scanRoom() {
-			case roster.StateLobby:
-				interval = fast
-			case roster.StateChannel:
-				interval = mid
-			default:
-				interval = slow
-			}
-			timer.Reset(interval)
+			scanAndPace()
 		}
+	}
+}
+
+// RefreshNow forces an immediate room scan (used by the UI's refresh button),
+// bypassing the in-game scan throttle so the roster reflects the live game.
+func (a *App) RefreshNow() {
+	a.mu.Lock()
+	a.lastInGameScan = time.Time{}
+	a.mu.Unlock()
+	select {
+	case a.roomWake <- struct{}{}:
+	default:
 	}
 }
 
@@ -453,8 +492,11 @@ func (a *App) resolveTags(parts []roster.Participant) []roster.Participant {
 	return out
 }
 
-// publishRoster matches the blacklist, fires the UI callback, and logs alerts.
+// publishRoster identifies the local player, records recent co-players, matches
+// the blacklist, fires the UI callback, and logs alerts.
 func (a *App) publishRoster(parts []roster.Participant, frozen bool) {
+	a.markSelfAndRecord(parts)
+
 	var hits []BlackHit
 	for _, p := range parts {
 		if e, ok := a.Black.Match(p.BattleTag, p.Name); ok {
@@ -481,6 +523,52 @@ func (a *App) publishRoster(parts []roster.Participant, frozen bool) {
 			a.logf("error", "⚠ 블랙유저 발견: %s  핑%dms  사유: %s",
 				h.Participant.Name, h.Participant.Latency, reason)
 		}
+	}
+}
+
+// markSelfAndRecord flags the local player in parts (learning our own battleTag
+// from the lobby's SetLocalPlayer slot so we recognise ourselves in-game too),
+// and records every other participant into the recent-players history.
+func (a *App) markSelfAndRecord(parts []roster.Participant) {
+	a.mu.Lock()
+	self := a.selfTag
+	a.mu.Unlock()
+
+	// Learn our battleTag from the marked local slot (set by roster.Read in a lobby).
+	for i := range parts {
+		if parts[i].Local && parts[i].BattleTag != "" && self == "" {
+			self = parts[i].BattleTag
+			a.mu.Lock()
+			a.selfTag = self
+			a.mu.Unlock()
+		}
+	}
+	// Mark ourselves everywhere (in-game rosters aren't slot-tagged).
+	if self != "" {
+		for i := range parts {
+			if parts[i].BattleTag == self {
+				parts[i].Local = true
+			}
+		}
+	}
+
+	if len(parts) == 0 || a.Recents == nil {
+		return
+	}
+	for _, p := range parts {
+		if p.Local || p.Name == "" {
+			continue
+		}
+		a.Recents.Record(p.Name, p.BattleTag)
+	}
+	a.mu.Lock()
+	due := time.Since(a.lastRecentSave) > 20*time.Second
+	if due {
+		a.lastRecentSave = time.Now()
+	}
+	a.mu.Unlock()
+	if due {
+		_ = a.Recents.Save()
 	}
 }
 
@@ -595,6 +683,12 @@ func (a *App) Stop() {
 	}
 	if a.Pipe != nil {
 		a.Pipe.Close()
+	}
+	if a.Recents != nil {
+		_ = a.Recents.Save()
+	}
+	if a.Identity != nil {
+		_ = a.Identity.Save()
 	}
 }
 

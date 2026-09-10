@@ -28,6 +28,7 @@ type Participant struct {
 	Latency   int    // ping (ms)
 	BattleTag string // unique account id, e.g. "condaactivat#3668"
 	ToonID    string
+	Local     bool // true for the local player (you)
 }
 
 // State describes what StarCraft screen we read.
@@ -55,7 +56,7 @@ func Read(pid uint32, store *identity.Store) ([]Participant, State, error) {
 	// gone); battleTag capture also works in the chat channel, where join events
 	// flow before you enter a room. Doing both in one pass halves the per-scan
 	// memory read — the main cost that made frequent scans lag the game.
-	slots, tags := scanLobby(p, store)
+	slots, tags, localSlot := scanLobby(p, store)
 	inLobby := false
 	for _, s := range slots {
 		if s.State == "human" && s.Name != "" {
@@ -83,6 +84,9 @@ func Read(pid uint32, store *identity.Store) ([]Participant, State, error) {
 		if rec, ok := store.LookupName(s.Name); ok {
 			s.BattleTag = rec.BattleTag
 			s.ToonID = rec.Toon
+		}
+		if s.SlotID == localSlot {
+			s.Local = true
 		}
 		byName[lower(s.Name)] = s
 	}
@@ -227,9 +231,23 @@ func captureProfileStructs(data []byte, store *identity.Store) {
 // and captures battleTag identities (JSON events + profile structs). Returns the
 // slots and the JSON battleTag count. One pass ≈ half the cost of scanning for
 // each separately.
-func scanLobby(p *memscan.Process, store *identity.Store) (slots []Participant, tags int) {
+func scanLobby(p *memscan.Process, store *identity.Store) (slots []Participant, tags, localSlot int) {
 	spd := []byte(`"endpoint":"SetPlayerData"`)
+	slp := []byte(`"endpoint":"SetLocalPlayer"`)
+	localSlot = -1
 	p.ScanChunks(1<<20, func(base uintptr, data []byte) {
+		// The local player's slot: "SetLocalPlayer","data":{"id":N,...}
+		for _, idx := range memscan.IndexAll(data, slp) {
+			hi := idx + 60
+			if hi > len(data) {
+				hi = len(data)
+			}
+			if v := number(data[idx:hi], "id"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil {
+					localSlot = n
+				}
+			}
+		}
 		for _, idx := range memscan.IndexAll(data, spd) {
 			hi := idx + 300
 			if hi > len(data) {
@@ -251,7 +269,7 @@ func scanLobby(p *memscan.Process, store *identity.Store) (slots []Participant, 
 		}
 		tags += captureChunk(data, store)
 	})
-	return slots, tags
+	return slots, tags, localSlot
 }
 
 // field extracts a JSON string value: "<key>":"<value>".

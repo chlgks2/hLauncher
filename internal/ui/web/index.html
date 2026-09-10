@@ -150,7 +150,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
   border-radius:var(--radius);padding:10px 13px}
 .brow .rsn{font-size:11px;padding:3px 10px;border-radius:20px;background:var(--bg-danger);color:var(--danger);
   flex-shrink:0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.brow .dt{font-size:11px;color:var(--text-muted);font-family:var(--mono);flex-shrink:0}
+.brow .dt{font-size:11px;color:var(--text-muted);font-family:var(--mono);flex-shrink:0;min-width:52px;text-align:right}
+.cntpill{font-size:11px;padding:3px 9px;border-radius:20px;flex-shrink:0;
+  background:var(--bg-accent);color:var(--accent);font-family:var(--mono)}
 
 /* modal */
 .mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;
@@ -188,6 +190,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
     <nav class="nav">
       <a id="nav-roster" class="on" onclick="hl.nav('roster')"><span class="ic">👥</span>방 참가자<span class="cnt" id="nav-roster-cnt"></span></a>
       <a id="nav-black" onclick="hl.nav('black')"><span class="ic">⛔</span>블랙리스트<span class="cnt" id="nav-black-cnt"></span></a>
+      <a id="nav-recent" onclick="hl.nav('recent')"><span class="ic">🕒</span>최근 플레이<span class="cnt" id="nav-recent-cnt"></span></a>
     </nav>
     <div class="foot">
       <div class="statline"><span class="dot" id="dot-sc"></span><span id="st-sc">스타크래프트 감지 안 됨</span></div>
@@ -230,6 +233,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
         </div>
         <div class="blist" id="black-rows"></div>
       </section>
+
+      <!-- RECENT PLAY VIEW -->
+      <section id="view-recent" class="view">
+        <div class="shead">
+          <div class="t">🕒 최근 플레이 <span class="sub" id="recent-sub"></span></div>
+          <span class="sp"></span>
+          <button class="btn sm" onclick="hl.send({action:'recents'})">🔄 새로고침</button>
+        </div>
+        <div class="blist" id="recent-rows"></div>
+      </section>
     </div>
   </main>
 </div>
@@ -252,14 +265,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
 
 <script>
 const hl = {
-  state:{view:'roster', roster:[], black:[], summary:{}},
+  state:{view:'roster', roster:[], black:[], recent:[], summary:{}},
   pending:null,
 
   send(o){ try{
       if(o.action==='ready'&&window.hlReady) window.hlReady();
       else if(o.action==='refresh'&&window.hlRefresh) window.hlRefresh();
+      else if(o.action==='recents'&&window.hlRecents) window.hlRecents();
       else if(o.action==='addBlack'&&window.hlAddBlack) window.hlAddBlack(o.name||'',o.battleTag||'',o.reason||'');
       else if(o.action==='removeBlack'&&window.hlRemoveBlack) window.hlRemoveBlack(o.id||'');
+      else if(o.action==='removeRecent'&&window.hlRemoveRecent) window.hlRemoveRecent(o.key||'');
     }catch(e){} },
 
   toast(msg,type){ const box=document.getElementById('toasts'); if(!box)return;
@@ -281,10 +296,11 @@ const hl = {
 
   esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); },
 
-  nav(v){ this.state.view=v; this.render(); },
+  nav(v){ this.state.view=v; if(v==='recent') this.send({action:'recents'}); this.render(); },
 
   setRoster(r){ this.state.roster=r||[]; if(this.state.view==='roster') this.renderRoster(); this.renderNavCounts(); },
   setBlack(b){ this.state.black=b||[]; if(this.state.view==='black') this.renderBlack(); this.renderNavCounts(); },
+  setRecents(r){ this.state.recent=r||[]; if(this.state.view==='recent') this.renderRecent(); this.renderNavCounts(); },
   setSummary(s){ this.state.summary=s||{}; this.renderSummary(); },
   setStatus(s){
     const sc=document.getElementById('dot-sc'), bn=document.getElementById('dot-bnet');
@@ -295,16 +311,17 @@ const hl = {
   },
 
   render(){
-    document.getElementById('nav-roster').classList.toggle('on',this.state.view==='roster');
-    document.getElementById('nav-black').classList.toggle('on',this.state.view==='black');
-    document.getElementById('view-roster').classList.toggle('on',this.state.view==='roster');
-    document.getElementById('view-black').classList.toggle('on',this.state.view==='black');
-    this.renderRoster(); this.renderBlack();
+    ['roster','black','recent'].forEach(v=>{
+      document.getElementById('nav-'+v).classList.toggle('on',this.state.view===v);
+      document.getElementById('view-'+v).classList.toggle('on',this.state.view===v);
+    });
+    this.renderRoster(); this.renderBlack(); this.renderRecent();
   },
 
   renderNavCounts(){
     document.getElementById('nav-roster-cnt').textContent=this.state.roster.length||'';
     document.getElementById('nav-black-cnt').textContent=this.state.black.length||'';
+    document.getElementById('nav-recent-cnt').textContent=this.state.recent.length||'';
   },
 
   renderSummary(){
@@ -381,6 +398,26 @@ const hl = {
       +'<span class="dt">'+this.esc(e.added)+'</span>'
       +'<button class="btn sm danger" onclick=\'hl.send({action:"removeBlack",id:"'+this.esc(e.id)+'"})\'>해제</button></div>'
     ).join('');
+  },
+
+  renderRecent(){
+    const box=document.getElementById('recent-rows'); if(!box)return;
+    document.getElementById('recent-sub').textContent=this.state.recent.length+'명';
+    const r=this.state.recent;
+    if(!r.length){ box.innerHTML='<div class="empty"><div class="big">🕒</div><div class="t">최근 함께 플레이한 기록이 없습니다</div><div class="d">방에 들어가면 자동으로 기록됩니다</div></div>'; return; }
+    box.innerHTML=r.map(e=>{
+      const tag=e.battleTag
+        ? '<div class="tag"><span class="txt">'+this.esc(e.battleTag)+'</span>'+this.cpBtn(e.battleTag,'배틀태그')+'</div>'
+        : '<div class="tag none"><span class="txt">배틀태그 미확인</span></div>';
+      const blackBtn='<button class="btn sm danger" onclick=\'hl.openModal('
+        +JSON.stringify(JSON.stringify({name:e.name,battleTag:e.battleTag||""}))+')\'>⛔ 블랙</button>';
+      return '<div class="brow"><div class="av">'+this.esc(this.initials(e.name))+'</div>'
+        +'<div class="who"><div class="nm"><span class="txt">'+this.esc(e.name)+'</span>'+this.cpBtn(e.name,'닉네임')+'</div>'+tag+'</div>'
+        +'<span class="cntpill">'+e.count+'회</span>'
+        +'<span class="dt">'+this.esc(e.lastSeen)+'</span>'
+        +blackBtn
+        +'<button class="btn sm" title="기록 삭제" onclick=\'hl.send({action:"removeRecent",key:"'+this.esc(e.key)+'"})\'>✕</button></div>';
+    }).join('');
   },
 
   openModal(dataStr){ this.pending=JSON.parse(dataStr);

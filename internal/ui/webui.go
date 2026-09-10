@@ -7,6 +7,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	webview "github.com/jchv/go-webview2"
 
@@ -34,6 +36,15 @@ type wsPlayer struct {
 	Race      string `json:"race"`
 	BattleTag string `json:"battleTag"`
 	Black     string `json:"black"`
+	Me        bool   `json:"me"`
+}
+
+type wsRecent struct {
+	Key       string `json:"key"`
+	Name      string `json:"name"`
+	BattleTag string `json:"battleTag"`
+	LastSeen  string `json:"lastSeen"`
+	Count     int    `json:"count"`
 }
 
 type wsSummary struct {
@@ -74,9 +85,11 @@ func Run(a *app.App) error {
 		u.ready = true
 		u.pushStatus()
 		u.pushBlacklist()
+		u.pushRecents()
 		u.refreshRoster()
 	})
-	w.Bind("hlRefresh", func() { u.refreshRoster() })
+	w.Bind("hlRefresh", func() { u.app.RefreshNow(); u.refreshRoster() })
+	w.Bind("hlRecents", func() { u.pushRecents() })
 	w.Bind("hlAddBlack", func(name, tag, reason string) {
 		_ = a.AddBlack(tag, name, reason)
 		u.pushBlacklist()
@@ -86,6 +99,10 @@ func Run(a *app.App) error {
 		_ = a.RemoveBlack(id)
 		u.pushBlacklist()
 		u.refreshRoster()
+	})
+	w.Bind("hlRemoveRecent", func(key string) {
+		a.RemoveRecent(key)
+		u.pushRecents()
 	})
 
 	w.SetHtml(indexHTML)
@@ -137,7 +154,7 @@ func (u *webUI) sendRoster(parts []roster.Participant, hits []app.BlackHit, froz
 	for _, p := range parts {
 		players = append(players, wsPlayer{
 			Slot: p.SlotID, Name: p.Name, Ping: p.Latency, Race: p.Race,
-			BattleTag: p.BattleTag, Black: reason[p.Name],
+			BattleTag: p.BattleTag, Black: reason[p.Name], Me: p.Local,
 		})
 	}
 	pj, _ := json.Marshal(players)
@@ -171,6 +188,37 @@ func (u *webUI) pushBlacklist() {
 	}
 	pj, _ := json.Marshal(rows)
 	u.eval("hl.setBlack(" + string(pj) + ")")
+}
+
+func relTime(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "방금"
+	case d < time.Hour:
+		return fmt.Sprintf("%d분 전", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d시간 전", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d일 전", int(d.Hours()/24))
+	}
+}
+
+func (u *webUI) pushRecents() {
+	entries := u.app.Recents.All()
+	rows := make([]wsRecent, 0, len(entries))
+	for _, e := range entries {
+		key := e.BattleTag
+		if key == "" {
+			key = "name:" + strings.ToLower(e.Name)
+		}
+		rows = append(rows, wsRecent{
+			Key: key, Name: e.Name, BattleTag: e.BattleTag,
+			LastSeen: relTime(e.LastSeen), Count: e.Count,
+		})
+	}
+	pj, _ := json.Marshal(rows)
+	u.eval("hl.setRecents(" + string(pj) + ")")
 }
 
 func (u *webUI) pushStatus() {
