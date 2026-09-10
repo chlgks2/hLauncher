@@ -81,6 +81,7 @@ type App struct {
 
 	lastInGame     []roster.Participant // cached in-game engine roster
 	lastInGameScan time.Time            // when lastInGame was last scanned
+	ingamePrev     map[string]string    // key->name of the last in-game roster (drop detection)
 
 	pubParts  []roster.Participant // last roster published to the UI
 	pubHits   []BlackHit
@@ -307,7 +308,7 @@ func (a *App) scanRoom() roster.State {
 	st := a.Status()
 	if !st.StarCraft.Running {
 		a.mu.Lock()
-		a.lastLobby, a.lastInGame = nil, nil // game gone: drop caches
+		a.lastLobby, a.lastInGame, a.ingamePrev = nil, nil, nil // game gone: drop caches
 		a.mu.Unlock()
 		return roster.StateIdle
 	}
@@ -316,7 +317,7 @@ func (a *App) scanRoom() roster.State {
 		a.lastSCPID = st.StarCraft.PID
 		a.mu.Lock()
 		a.seenBlack = make(map[string]bool)
-		a.lastLobby, a.lastInGame = nil, nil
+		a.lastLobby, a.lastInGame, a.ingamePrev = nil, nil, nil
 		a.mu.Unlock()
 	}
 
@@ -328,49 +329,113 @@ func (a *App) scanRoom() roster.State {
 
 	switch state {
 	case roster.StateLobby:
-		// Live room: remember it as the snapshot and show it live. Drop any
-		// previous match's in-game cache — a new game is being set up.
-		a.mu.Lock()
-		a.lastLobby = parts
-		a.lastInGame = nil
-		a.mu.Unlock()
-		a.publishRoster(parts, false)
-	default:
-		// No lobby (StateIdle in an actual match/menu, or StateChannel between
-		// rooms). Read the engine's in-game player array directly (live names +
-		// battleTags, no injection) — a match keeps it even after the lobby JSON
-		// is gone. The array is stable during a match and the scan is heavy, so
-		// throttle it (retry sooner while we have nothing, to catch game start).
-		a.mu.Lock()
-		wait := 25 * time.Second
-		if len(a.lastInGame) == 0 {
-			wait = 8 * time.Second
-		}
-		due := time.Since(a.lastInGameScan) > wait
-		a.mu.Unlock()
-		if due {
-			ig, _ := roster.InGamePlayers(st.StarCraft.PID, a.Identity)
+		if len(parts) >= 2 {
+			// Clear multi-player lobby: show it live (with ping) and drop any
+			// previous match's in-game cache — a new game is being set up.
 			a.mu.Lock()
-			a.lastInGame = ig
-			a.lastInGameScan = time.Now()
+			a.lastLobby = parts
+			a.lastInGame, a.ingamePrev = nil, nil
 			a.mu.Unlock()
+			a.publishRoster(parts, false)
+			break
 		}
-		a.mu.Lock()
-		ig, snap := a.lastInGame, a.lastLobby
-		a.mu.Unlock()
-		switch {
-		case len(ig) > 0:
+		// Only one SetPlayerData human. That's either a lobby you're hosting
+		// alone, or the local player's entry lingering into an actual match
+		// (the others' lobby JSON is already destroyed). The engine player array
+		// disambiguates: if it lists more players, we're really in-game.
+		if ig := a.inGameRoster(st.StarCraft.PID); len(ig) > len(parts) {
 			state = roster.StateInGame
-			a.publishRoster(a.resolveTags(ig), true) // live in-game roster
-		case state == roster.StateChannel:
-			a.publishRoster(nil, false) // in the channel, no room to show
-		case len(snap) > 0:
-			a.publishRoster(a.resolveTags(snap), true) // loading: frozen last lobby
-		default:
+			res := a.resolveTags(ig)
+			a.publishRoster(res, true)
+			a.detectDrops(res)
+		} else {
+			a.mu.Lock()
+			a.lastLobby = parts
+			a.ingamePrev = nil
+			a.mu.Unlock()
+			a.publishRoster(parts, false)
+		}
+	default:
+		// No SetPlayerData lobby (StateChannel while browsing the chat channel, or
+		// StateIdle in an actual match / a plain menu). The engine player array is
+		// the reliable signal — battleTag fragments linger in memory in-game too,
+		// so we can't tell a match from the channel by those alone. If the array
+		// has players, we're in a match; otherwise we've left the room, so clear.
+		if ig := a.inGameRoster(st.StarCraft.PID); len(ig) > 0 {
+			state = roster.StateInGame
+			res := a.resolveTags(ig)
+			a.publishRoster(res, true)
+			a.detectDrops(res)
+		} else {
+			a.mu.Lock()
+			a.lastLobby, a.lastInGame, a.ingamePrev = nil, nil, nil
+			a.mu.Unlock()
 			a.publishRoster(nil, false)
 		}
 	}
 	return state
+}
+
+// detectDrops compares the current in-game roster to the previous one and alerts
+// when a player vanishes from an ongoing match — the visible symptom of a
+// disconnect/"무한디스" attack. A match can't gain players mid-game, so if any
+// new player appears we treat it as a new game and reset instead of alerting
+// (this avoids flagging every opponent when one game ends and another begins,
+// since the local player is present in both).
+func (a *App) detectDrops(cur []roster.Participant) {
+	curSet := make(map[string]string, len(cur))
+	for _, p := range cur {
+		key := p.BattleTag
+		if key == "" {
+			key = p.Name
+		}
+		curSet[key] = p.Name
+	}
+	a.mu.Lock()
+	prev := a.ingamePrev
+	newcomer := false
+	for k := range curSet {
+		if _, ok := prev[k]; !ok {
+			newcomer = true
+			break
+		}
+	}
+	var gone []string
+	if len(prev) > 0 && !newcomer {
+		for k, name := range prev {
+			if _, ok := curSet[k]; !ok {
+				gone = append(gone, name)
+			}
+		}
+	}
+	a.ingamePrev = curSet
+	a.mu.Unlock()
+
+	for _, name := range gone {
+		a.logf("error", "🔌 이탈/드랍 감지: %s 님이 게임에서 빠졌습니다 (무한디스 의심)", name)
+	}
+}
+
+// inGameRoster returns the engine's in-game player array, scanned at most every
+// 8-25s and cached (the array is stable during a match, and the scan is heavy).
+func (a *App) inGameRoster(pid uint32) []roster.Participant {
+	a.mu.Lock()
+	wait := 25 * time.Second
+	if len(a.lastInGame) == 0 {
+		wait = 8 * time.Second
+	}
+	due := time.Since(a.lastInGameScan) > wait
+	a.mu.Unlock()
+	if due {
+		ig, _ := roster.InGamePlayers(pid, a.Identity)
+		a.mu.Lock()
+		a.lastInGame = ig
+		a.lastInGameScan = time.Now()
+		a.mu.Unlock()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastInGame
 }
 
 // resolveTags re-fills battleTags on a snapshot from the current identity store.

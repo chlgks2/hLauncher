@@ -50,8 +50,12 @@ func Read(pid uint32, store *identity.Store) ([]Participant, State, error) {
 	}
 	defer p.Close()
 
-	// Only lobbies carry full SetPlayerData; in-game/menu they're gone.
-	slots := readSetPlayerData(p)
+	// Single memory pass: read the lobby SetPlayerData slots AND capture battleTag
+	// identities together. Only lobbies carry SetPlayerData (in-game/menu it's
+	// gone); battleTag capture also works in the chat channel, where join events
+	// flow before you enter a room. Doing both in one pass halves the per-scan
+	// memory read — the main cost that made frequent scans lag the game.
+	slots, tags := scanLobby(p, store)
 	inLobby := false
 	for _, s := range slots {
 		if s.State == "human" && s.Name != "" {
@@ -59,11 +63,6 @@ func Read(pid uint32, store *identity.Store) ([]Participant, State, error) {
 			break
 		}
 	}
-	// Capture battleTags whenever channel/lobby JSON is present — that includes
-	// the chat channel, where join events (name->battleTag) actually flow before
-	// you enter a room. In an actual match these events are gone, so tags==0 and
-	// we report StateIdle, letting the caller back off (the in-game "stop").
-	tags := captureInto(p, store)
 
 	// A chat channel carries many join events; a match has at most a stray tag
 	// fragment. Require several so in-game isn't misread as the channel (which
@@ -126,45 +125,112 @@ func CaptureIdentities(pid uint32, store *identity.Store) error {
 	return nil
 }
 
-// captureInto scans for `"battleTag":"` and records every name field near it.
+// captureInto scans memory and records battleTag identities into store.
 // Returns the number of battleTag occurrences seen (used to tell "in a chat
 // channel" from "in an actual match", where none exist).
 func captureInto(p *memscan.Process, store *identity.Store) int {
-	needle := []byte(`"battleTag":"`)
 	seen := 0
 	p.ScanChunks(1<<20, func(base uintptr, data []byte) {
-		for _, idx := range memscan.IndexAll(data, needle) {
-			seen++
-			lo := idx - 500
-			if lo < 0 {
-				lo = 0
-			}
-			hi := idx + 300
-			if hi > len(data) {
-				hi = len(data)
-			}
-			win := data[lo:hi]
-			battleTag := field(win, "battleTag")
-			if battleTag == "" {
-				continue
-			}
-			pretty := field(win, "prettyBattleTag")
-			toon := number(win, "legacyChatToonId")
-			for _, key := range []string{"name", "legacyToonName", "rawName"} {
-				if nm := field(win, key); nm != "" {
-					store.Update(nm, battleTag, pretty, toon)
-				}
-			}
-		}
+		seen += captureChunk(data, store)
 	})
 	return seen
 }
 
-func readSetPlayerData(p *memscan.Process) []Participant {
-	needle := []byte(`"endpoint":"SetPlayerData"`)
-	var out []Participant
+// captureChunk records battleTags found in one memory chunk from both sources —
+// the `"battleTag":"` JSON events and the binary profile struct — and returns
+// the number of JSON battleTag occurrences seen. Sharing this lets the lobby
+// read capture identities in the same memory pass (no second scan).
+func captureChunk(data []byte, store *identity.Store) int {
+	needle := []byte(`"battleTag":"`)
+	seen := 0
+	for _, idx := range memscan.IndexAll(data, needle) {
+		seen++
+		lo := idx - 500
+		if lo < 0 {
+			lo = 0
+		}
+		hi := idx + 300
+		if hi > len(data) {
+			hi = len(data)
+		}
+		win := data[lo:hi]
+		battleTag := field(win, "battleTag")
+		if battleTag == "" {
+			continue
+		}
+		pretty := field(win, "prettyBattleTag")
+		toon := number(win, "legacyChatToonId")
+		for _, key := range []string{"name", "legacyToonName", "rawName"} {
+			if nm := field(win, key); nm != "" {
+				store.Update(nm, battleTag, pretty, toon)
+			}
+		}
+	}
+	// Second source: the binary profile struct. StarCraft keeps some room
+	// members' full profile with the battleTag string exactly 0xC8 bytes before
+	// the nickname. This catches players whose JSON join event has already been
+	// truncated/evicted (the common coverage gap).
+	captureProfileStructs(data, store)
+	return seen
+}
+
+// profileNameOffset is the fixed distance from the start of the battleTag string
+// to the start of the nickname in StarCraft's per-member profile struct.
+const profileNameOffset = 0xC8
+
+// captureProfileStructs records name->battleTag pairs from the binary profile
+// struct: a "prefix#digits" battleTag string with the nickname at +0xC8.
+func captureProfileStructs(data []byte, store *identity.Store) {
+	for i := 0; i < len(data); {
+		rel := bytes.IndexByte(data[i:], '#')
+		if rel < 0 {
+			break
+		}
+		h := i + rel
+		// A battleTag suffix is 1-6 digits terminated by NUL.
+		d := h + 1
+		for d < len(data) && data[d] >= '0' && data[d] <= '9' {
+			d++
+		}
+		if d == h+1 || d-(h+1) > 6 || d >= len(data) || data[d] != 0 {
+			i = h + 1
+			continue
+		}
+		// The tag prefix runs back from '#' over printable, non-NUL bytes.
+		s := h
+		for s > 0 {
+			c := data[s-1]
+			if c == 0 || c < 0x20 || c == 0x7f {
+				break
+			}
+			s--
+		}
+		if h-s < 2 || h-s > 40 {
+			i = h + 1
+			continue
+		}
+		np := s + profileNameOffset
+		if np < len(data) {
+			end := np + 26
+			if end > len(data) {
+				end = len(data)
+			}
+			if name := cstr(data[np:end]); name != "" {
+				store.Update(name, string(data[s:d]), "", "")
+			}
+		}
+		i = d
+	}
+}
+
+// scanLobby does ONE memory pass that both parses the lobby SetPlayerData slots
+// and captures battleTag identities (JSON events + profile structs). Returns the
+// slots and the JSON battleTag count. One pass ≈ half the cost of scanning for
+// each separately.
+func scanLobby(p *memscan.Process, store *identity.Store) (slots []Participant, tags int) {
+	spd := []byte(`"endpoint":"SetPlayerData"`)
 	p.ScanChunks(1<<20, func(base uintptr, data []byte) {
-		for _, idx := range memscan.IndexAll(data, needle) {
+		for _, idx := range memscan.IndexAll(data, spd) {
 			hi := idx + 300
 			if hi > len(data) {
 				hi = len(data)
@@ -181,10 +247,11 @@ func readSetPlayerData(p *memscan.Process) []Participant {
 			if v := number(win, "latency"); v != "" {
 				s.Latency, _ = strconv.Atoi(v)
 			}
-			out = append(out, s)
+			slots = append(slots, s)
 		}
+		tags += captureChunk(data, store)
 	})
-	return out
+	return slots, tags
 }
 
 // field extracts a JSON string value: "<key>":"<value>".
@@ -292,12 +359,13 @@ func playerStructAt(data []byte, i int) bool {
 	}
 	id := u32(data[i:])
 	storm := u32(data[i+4:])
-	if id >= 16 || storm >= 16 {
+	// Empty/open/closed slots use 0xffffffff as the "no storm id" sentinel; they
+	// must still pass so the array walk doesn't stop at an empty slot between
+	// players (that bug dropped everyone after the first gap).
+	if id >= 16 || (storm >= 16 && storm != 0xffffffff) {
 		return false
 	}
-	switch data[i+0x08] { // type: inactive/computer/human/rescue/open/neutral/closed
-	case 0, 1, 2, 3, 4, 5, 6, 7, 8:
-	default:
+	if data[i+0x08] > 15 { // player type (human/computer/open/closed/observer/…)
 		return false
 	}
 	if data[i+0x09] > 6 { // race 0..6 (zerg/terran/protoss/… /select/random)

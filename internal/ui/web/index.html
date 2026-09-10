@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>H런처</title>
+<style>
+:root{
+  --bg:#0a0e17; --surface-1:#111827; --surface-2:#161f30; --surface-3:#1b2740;
+  --popover:#1c2740;
+  --border:rgba(255,255,255,.08); --border-strong:rgba(255,255,255,.14);
+  --border-accent:#3b82f6; --border-danger:rgba(239,68,68,.55);
+  --text:#e8eef6; --text-secondary:#aab6c6; --text-muted:#6d7a8c;
+  --accent:#4c9bff; --bg-accent:rgba(59,130,246,.16);
+  --success:#43c26b; --bg-success:rgba(67,194,107,.14);
+  --warning:#f2b23c; --bg-warning:rgba(242,178,60,.14);
+  --danger:#ff6a6a; --bg-danger:rgba(239,68,68,.14);
+  --radius:8px; --mono:'Consolas','D2Coding','Cascadia Mono',monospace;
+  --sans:'Segoe UI','Malgun Gothic',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;
+  overflow:hidden;user-select:none;-webkit-user-select:none}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:6px}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.2)}
+::-webkit-scrollbar-track{background:transparent}
+
+.app{display:grid;grid-template-columns:172px 1fr;height:100vh}
+
+/* ---------- sidebar ---------- */
+.side{background:linear-gradient(180deg,#0c1220,#0a0e17);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;padding:16px 12px}
+.logo{display:flex;align-items:center;gap:9px;padding:4px 6px 16px}
+.logo .mark{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:#fff;
+  box-shadow:0 2px 10px rgba(59,130,246,.4)}
+.logo b{font-size:14px;letter-spacing:.5px}
+.logo small{display:block;font-size:9.5px;color:var(--text-muted);letter-spacing:3px;font-weight:600}
+.nav{display:flex;flex-direction:column;gap:3px;margin-top:6px}
+.nav a{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--radius);
+  color:var(--text-secondary);font-size:13px;cursor:pointer;transition:.12s}
+.nav a .ic{font-size:15px;width:18px;text-align:center}
+.nav a:hover{background:rgba(255,255,255,.04);color:var(--text)}
+.nav a.on{background:var(--bg-accent);color:var(--accent);font-weight:600;
+  box-shadow:inset 0 0 0 1px rgba(59,130,246,.25)}
+.nav a .cnt{margin-left:auto;font-size:11px;color:var(--text-muted);font-family:var(--mono)}
+.side .foot{margin-top:auto;padding:10px 8px 2px;border-top:1px solid var(--border)}
+.statline{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text-secondary);
+  padding:4px 0}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--text-muted);flex-shrink:0}
+.dot.g{background:var(--success);box-shadow:0 0 6px var(--success)}
+.dot.r{background:var(--danger)}
+.ver{font-size:10px;color:var(--text-muted);padding:8px 2px 0;font-family:var(--mono)}
+
+/* ---------- main ---------- */
+.main{display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.banner{position:relative;height:96px;flex-shrink:0;overflow:hidden;
+  background:radial-gradient(120% 160% at 80% -20%,#1e3a8a 0%,#0f1b34 45%,#0a0e17 100%);
+  border-bottom:1px solid var(--border)}
+.banner::after{content:"";position:absolute;right:-40px;top:-60px;width:280px;height:280px;
+  border-radius:50%;background:radial-gradient(circle,rgba(76,155,255,.22),transparent 62%)}
+.banner .in{position:relative;z-index:1;padding:20px 26px;display:flex;align-items:center;height:100%}
+.banner h1{font-size:21px;font-weight:800;letter-spacing:-.3px}
+.banner p{font-size:12.5px;color:var(--text-secondary);margin-top:3px}
+.banner .acct{margin-left:auto;display:flex;align-items:center;gap:10px}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:20px;
+  font-size:12px;font-weight:600;background:var(--bg-accent);color:var(--accent);
+  box-shadow:inset 0 0 0 1px rgba(59,130,246,.3)}
+.badge.game{background:var(--bg-warning);color:var(--warning);box-shadow:inset 0 0 0 1px rgba(242,178,60,.3)}
+.badge.idle{background:rgba(255,255,255,.06);color:var(--text-muted);box-shadow:none}
+.chip{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.05);
+  border:1px solid var(--border);border-radius:22px;padding:5px 12px 5px 6px;font-size:12px}
+.chip .av{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#1d4ed8);
+  display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff}
+.chip .tag{font-family:var(--mono);color:var(--text-secondary)}
+
+.content{flex:1;overflow-y:auto;padding:18px 24px 26px}
+.view{display:none}.view.on{display:block}
+
+/* section header */
+.shead{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.shead .t{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px}
+.shead .sub{font-size:12px;color:var(--text-muted)}
+.shead .sp{margin-left:auto}
+.btn{height:32px;padding:0 13px;border-radius:var(--radius);border:1px solid var(--border-strong);
+  background:rgba(255,255,255,.04);color:var(--text);font-size:12.5px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:6px;font-family:var(--sans);transition:.12s}
+.btn:hover{background:rgba(255,255,255,.09);border-color:var(--accent)}
+.btn.pri{background:linear-gradient(135deg,#3b82f6,#2563eb);border-color:transparent;font-weight:600;
+  box-shadow:0 2px 10px rgba(59,130,246,.35)}
+.btn.pri:hover{filter:brightness(1.1)}
+.btn.sm{height:27px;padding:0 9px;font-size:11.5px}
+.btn.danger{color:var(--danger);border-color:var(--border-danger)}
+.btn.danger:hover{background:var(--bg-danger)}
+
+/* alert strip */
+.alert{display:none;align-items:center;gap:9px;padding:10px 14px;border-radius:var(--radius);
+  background:var(--bg-danger);border:1px solid var(--border-danger);color:var(--danger);
+  font-size:13px;font-weight:600;margin-bottom:14px}
+.alert.on{display:flex}
+
+/* participant cards */
+.rows{display:flex;flex-direction:column;gap:6px}
+.card{display:flex;align-items:center;gap:11px;background:var(--surface-2);
+  border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;transition:.12s}
+.card:hover{border-color:var(--border-strong);background:var(--surface-3)}
+.card.black{border-color:var(--border-danger);background:linear-gradient(90deg,var(--bg-danger),var(--surface-2) 60%)}
+.card.me{border-color:rgba(59,130,246,.4);background:linear-gradient(90deg,var(--bg-accent),var(--surface-2) 55%)}
+.av{width:34px;height:34px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;
+  justify-content:center;font-size:12px;font-weight:700;color:#fff;
+  background:linear-gradient(135deg,#475569,#334155)}
+.av.t{background:linear-gradient(135deg,#e0574a,#b53a2f)}
+.av.z{background:linear-gradient(135deg,#7c4dd6,#5b2fae)}
+.av.p{background:linear-gradient(135deg,#e0a93c,#c07f22)}
+.av.black{background:linear-gradient(135deg,#ef4444,#b91c1c)}
+.who{min-width:0;flex:1}
+.who .nm{font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:6px}
+.who .nm .txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+.who .nm .slot{font-size:10px;color:var(--text-muted);font-family:var(--mono);font-weight:400}
+.who .tag{font-size:11.5px;color:var(--accent);font-family:var(--mono);margin-top:2px;
+  display:flex;align-items:center;gap:6px}
+.who .tag.none{color:var(--text-muted)}
+/* selectable text so users can drag-copy */
+.who .nm .txt,.who .tag .txt,.brow .nm,.brow .tag{user-select:text;-webkit-user-select:text;cursor:text}
+/* inline copy button */
+.cp{border:none;background:rgba(255,255,255,.06);color:var(--text-muted);cursor:pointer;
+  width:19px;height:19px;border-radius:5px;font-size:10px;line-height:1;flex-shrink:0;
+  display:inline-flex;align-items:center;justify-content:center;transition:.12s;padding:0}
+.cp:hover{background:var(--bg-accent);color:var(--accent)}
+.cp:active{transform:scale(.9)}
+.race{font-size:11.5px;color:var(--text-secondary);width:74px;flex-shrink:0}
+.ping{font-size:13px;font-family:var(--mono);width:52px;text-align:right;flex-shrink:0;color:var(--text-secondary)}
+.ping.g{color:var(--success)}.ping.a{color:var(--warning)}.ping.b{color:var(--danger)}
+.pill{font-size:11px;padding:3px 9px;border-radius:20px;flex-shrink:0;white-space:nowrap}
+.pill.black{background:var(--bg-danger);color:var(--danger)}
+.pill.me{background:var(--bg-accent);color:var(--accent)}
+.act{flex-shrink:0;display:flex;gap:5px}
+
+/* empty state */
+.empty{text-align:center;padding:56px 20px;color:var(--text-muted)}
+.empty .big{font-size:40px;margin-bottom:10px;opacity:.5}
+.empty .t{font-size:14px;color:var(--text-secondary);margin-bottom:5px}
+.empty .d{font-size:12px}
+
+/* blacklist */
+.blist{display:flex;flex-direction:column;gap:6px}
+.brow{display:flex;align-items:center;gap:11px;background:var(--surface-2);border:1px solid var(--border);
+  border-radius:var(--radius);padding:10px 13px}
+.brow .rsn{font-size:11px;padding:3px 10px;border-radius:20px;background:var(--bg-danger);color:var(--danger);
+  flex-shrink:0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brow .dt{font-size:11px;color:var(--text-muted);font-family:var(--mono);flex-shrink:0}
+
+/* modal */
+.mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;
+  justify-content:center;padding:20px;z-index:50;backdrop-filter:blur(2px)}
+.mask.on{display:flex}
+.modal{width:100%;max-width:380px;background:var(--popover);border:1px solid var(--border-strong);
+  border-radius:12px;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.modal h3{font-size:15px;margin-bottom:4px}
+.modal .who2{font-size:12px;color:var(--text-muted);font-family:var(--mono);margin-bottom:14px}
+.modal label{font-size:11.5px;color:var(--text-muted);display:block;margin-bottom:6px}
+.modal input,.modal textarea{width:100%;background:var(--surface-1);border:1px solid var(--border-strong);
+  border-radius:var(--radius);color:var(--text);font-size:13px;padding:9px 11px;font-family:var(--sans);
+  outline:none}
+.modal input:focus,.modal textarea:focus{border-color:var(--accent)}
+.modal .btns{display:flex;gap:8px;margin-top:16px}
+.modal .btns .btn{flex:1;justify-content:center}
+
+/* toasts */
+#toasts{position:fixed;right:16px;bottom:16px;z-index:80;display:flex;flex-direction:column;gap:8px}
+.toast{background:var(--popover);border:1px solid var(--border-strong);border-left:3px solid var(--accent);
+  border-radius:var(--radius);padding:11px 15px;font-size:12.5px;max-width:340px;color:var(--text);
+  box-shadow:0 8px 30px rgba(0,0,0,.45);transition:opacity .3s;animation:slideIn .25s ease}
+.toast.danger{border-left-color:var(--danger);color:var(--danger)}
+.toast.warn{border-left-color:var(--warning)}
+@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="logo">
+      <div class="mark">H</div>
+      <div><b>H런처</b><small>LAUNCHER</small></div>
+    </div>
+    <nav class="nav">
+      <a id="nav-roster" class="on" onclick="hl.nav('roster')"><span class="ic">👥</span>방 참가자<span class="cnt" id="nav-roster-cnt"></span></a>
+      <a id="nav-black" onclick="hl.nav('black')"><span class="ic">⛔</span>블랙리스트<span class="cnt" id="nav-black-cnt"></span></a>
+    </nav>
+    <div class="foot">
+      <div class="statline"><span class="dot" id="dot-sc"></span><span id="st-sc">스타크래프트 감지 안 됨</span></div>
+      <div class="statline"><span class="dot" id="dot-bnet"></span><span id="st-bnet">Battle.net 대기</span></div>
+      <div class="ver" id="ver">H런처</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="banner">
+      <div class="in">
+        <div>
+          <h1>다시, 전장으로.</h1>
+          <p>좋은 유저와 함께하는 더 즐거운 스타크래프트</p>
+        </div>
+        <div class="acct">
+          <span class="badge" id="state-badge">🟡 대기 중</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- ROSTER VIEW -->
+      <section id="view-roster" class="view on">
+        <div class="shead">
+          <div class="t"><span id="roster-badge">🟢 방 참가자</span></div>
+          <span class="sub" id="roster-sub"></span>
+          <span class="sp"></span>
+          <button class="btn sm" onclick="hl.send({action:'refresh'})">🔄 새로고침</button>
+        </div>
+        <div class="alert" id="alert"></div>
+        <div class="rows" id="roster-rows"></div>
+      </section>
+
+      <!-- BLACKLIST VIEW -->
+      <section id="view-black" class="view">
+        <div class="shead">
+          <div class="t">⛔ 블랙리스트 <span class="sub" id="black-sub"></span></div>
+          <span class="sp"></span>
+        </div>
+        <div class="blist" id="black-rows"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div id="toasts"></div>
+
+<!-- reason modal -->
+<div class="mask" id="mask">
+  <div class="modal">
+    <h3 id="m-title">블랙리스트 등록</h3>
+    <div class="who2" id="m-who"></div>
+    <label>차단 사유</label>
+    <textarea id="m-reason" rows="3" placeholder="예: 4:4 팀플에서 불리해지면 탈주"></textarea>
+    <div class="btns">
+      <button class="btn" onclick="hl.closeModal()">취소</button>
+      <button class="btn pri" onclick="hl.confirmBlack()">등록</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const hl = {
+  state:{view:'roster', roster:[], black:[], summary:{}},
+  pending:null,
+
+  send(o){ try{
+      if(o.action==='ready'&&window.hlReady) window.hlReady();
+      else if(o.action==='refresh'&&window.hlRefresh) window.hlRefresh();
+      else if(o.action==='addBlack'&&window.hlAddBlack) window.hlAddBlack(o.name||'',o.battleTag||'',o.reason||'');
+      else if(o.action==='removeBlack'&&window.hlRemoveBlack) window.hlRemoveBlack(o.id||'');
+    }catch(e){} },
+
+  toast(msg,type){ const box=document.getElementById('toasts'); if(!box)return;
+    const t=document.createElement('div'); t.className='toast '+(type||'');
+    t.textContent=msg; box.appendChild(t);
+    setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),300);},5500); },
+
+  cpBtn(val,label){ return '<button class="cp" title="'+this.esc(label)+' 복사" data-v="'+this.esc(val)
+    +'" onclick="event.stopPropagation();hl.copy(this.dataset.v)">📋</button>'; },
+  copy(text){ const s=String(text==null?'':text);
+    const ok=()=>this.toast('복사됨: '+s);
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(s).then(ok).catch(()=>this.copyFallback(s,ok));
+    } else this.copyFallback(s,ok); },
+  copyFallback(s,ok){ const ta=document.createElement('textarea'); ta.value=s;
+    ta.style.position='fixed'; ta.style.top='-9999px'; document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    try{ document.execCommand('copy'); ok(); }catch(e){} ta.remove(); },
+
+  esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); },
+
+  nav(v){ this.state.view=v; this.render(); },
+
+  setRoster(r){ this.state.roster=r||[]; if(this.state.view==='roster') this.renderRoster(); this.renderNavCounts(); },
+  setBlack(b){ this.state.black=b||[]; if(this.state.view==='black') this.renderBlack(); this.renderNavCounts(); },
+  setSummary(s){ this.state.summary=s||{}; this.renderSummary(); },
+  setStatus(s){
+    const sc=document.getElementById('dot-sc'), bn=document.getElementById('dot-bnet');
+    document.getElementById('st-sc').textContent = s.scRunning? '스타크래프트 실행 중':'스타크래프트 감지 안 됨';
+    document.getElementById('st-bnet').textContent = s.bnetRunning? 'Battle.net 실행 중':'Battle.net 대기';
+    sc.className='dot'+(s.scRunning?' g':''); bn.className='dot'+(s.bnetRunning?' g':'');
+    if(s.version) document.getElementById('ver').textContent='H런처 '+s.version;
+  },
+
+  render(){
+    document.getElementById('nav-roster').classList.toggle('on',this.state.view==='roster');
+    document.getElementById('nav-black').classList.toggle('on',this.state.view==='black');
+    document.getElementById('view-roster').classList.toggle('on',this.state.view==='roster');
+    document.getElementById('view-black').classList.toggle('on',this.state.view==='black');
+    this.renderRoster(); this.renderBlack();
+  },
+
+  renderNavCounts(){
+    document.getElementById('nav-roster-cnt').textContent=this.state.roster.length||'';
+    document.getElementById('nav-black-cnt').textContent=this.state.black.length||'';
+  },
+
+  renderSummary(){
+    const s=this.state.summary||{};
+    const badge=document.getElementById('state-badge');
+    const rb=document.getElementById('roster-badge');
+    let txt='🟡 대기 중', cls='badge idle';
+    if(s.state==='ingame'){ txt='🎮 게임 중'; cls='badge game'; }
+    else if(s.state==='lobby'){ txt='🟢 대기방'; cls='badge'; }
+    else if(s.state==='channel'){ txt='📡 채널'; cls='badge'; }
+    badge.className=cls; badge.textContent=txt;
+    rb.textContent=(s.state==='ingame'?'🎮 게임 중':'🟢 방 참가자');
+    document.getElementById('roster-sub').textContent =
+      '👥 '+(s.count||0)+'명  ·  🏷️ 배틀태그 '+(s.tags||0)+'개 누적';
+    const al=document.getElementById('alert');
+    if(s.blackHits>0){ al.classList.add('on'); al.textContent='🚨 이 방에 블랙리스트 유저 '+s.blackHits+'명이 있습니다!'; }
+    else al.classList.remove('on');
+    this.renderNavCounts();
+  },
+
+  raceInfo(r){
+    if(r==='Terran') return {c:'t', k:'🔫 테란'};
+    if(r==='Zerg') return {c:'z', k:'🐛 저그'};
+    if(r==='Protoss') return {c:'p', k:'🔮 프로토스'};
+    if(r==='Random') return {c:'', k:'🎲 랜덤'};
+    return {c:'', k:r||''};
+  },
+  initials(n){ n=(n||'?').replace(/[^\w가-힣]/g,''); return (n.slice(0,2)||'??').toUpperCase(); },
+  pingCls(p){ if(p<0)return''; if(p<=40)return'g'; if(p<=120)return'a'; return'b'; },
+
+  renderRoster(){
+    const box=document.getElementById('roster-rows'); if(!box)return;
+    const r=this.state.roster;
+    if(!r.length){
+      box.innerHTML='<div class="empty"><div class="big">🎮</div><div class="t">대기방에 들어가면 참가자가 표시됩니다</div><div class="d">게임 중에는 마지막 명단이 유지됩니다</div></div>';
+      return;
+    }
+    box.innerHTML=r.map(p=>{
+      const ri=this.raceInfo(p.race), black=!!p.black, me=!!p.me;
+      const cpN=this.cpBtn(p.name,'닉네임');
+      const tag=p.battleTag
+        ? '<div class="tag"><span class="txt">'+this.esc(p.battleTag)+'</span>'+this.cpBtn(p.battleTag,'배틀태그')+'</div>'
+        : '<div class="tag none"><span class="txt">배틀태그 미확인</span></div>';
+      const ping=p.ping<0?'-':p.ping;
+      let pill='';
+      if(black) pill='<span class="pill black" title="'+this.esc(p.black)+'">⛔ '+this.esc(p.black)+'</span>';
+      else if(me) pill='<span class="pill me">나</span>';
+      const btn = black
+        ? '<button class="btn sm" onclick=\'hl.send({action:"removeBlack",id:"'+this.esc(p.battleTag||p.name)+'"})\'>해제</button>'
+        : '<button class="btn sm danger" onclick=\'hl.openModal('+JSON.stringify(JSON.stringify({name:p.name,battleTag:p.battleTag||""}))+')\'>⛔ 블랙</button>';
+      const avc = black?'black':ri.c;
+      return '<div class="card'+(black?' black':(me?' me':''))+'">'
+        +'<div class="av '+avc+'">'+this.esc(this.initials(p.name))+'</div>'
+        +'<div class="who"><div class="nm"><span class="txt">'+this.esc(p.name)+'</span>'
+        +'<span class="slot">#'+p.slot+'</span>'+cpN+'</div>'+tag+'</div>'
+        +'<div class="race">'+ri.k+'</div>'
+        +'<div class="ping '+this.pingCls(p.ping)+'">'+ping+'</div>'
+        +(pill?'<div style="flex-shrink:0">'+pill+'</div>':'')
+        +'<div class="act">'+btn+'</div></div>';
+    }).join('');
+  },
+
+  renderBlack(){
+    const box=document.getElementById('black-rows'); if(!box)return;
+    document.getElementById('black-sub').textContent=this.state.black.length+'명';
+    const b=this.state.black;
+    if(!b.length){ box.innerHTML='<div class="empty"><div class="big">⛔</div><div class="t">등록된 블랙리스트가 없습니다</div><div class="d">방 참가자에서 유저를 블랙 등록하세요</div></div>'; return; }
+    box.innerHTML=b.map(e=>
+      '<div class="brow"><div class="av black">'+this.esc(this.initials(e.name||e.id))+'</div>'
+      +'<div class="who"><div class="nm"><span class="txt">'+this.esc(e.name||'(이름없음)')+'</span>'
+      +(e.name?this.cpBtn(e.name,'닉네임'):'')+'</div>'
+      +'<div class="tag"><span class="txt">'+this.esc(e.id)+'</span>'+this.cpBtn(e.id,'배틀태그')+'</div></div>'
+      +'<span class="rsn" title="'+this.esc(e.reason)+'">'+this.esc(e.reason||'(사유없음)')+'</span>'
+      +'<span class="dt">'+this.esc(e.added)+'</span>'
+      +'<button class="btn sm danger" onclick=\'hl.send({action:"removeBlack",id:"'+this.esc(e.id)+'"})\'>해제</button></div>'
+    ).join('');
+  },
+
+  openModal(dataStr){ this.pending=JSON.parse(dataStr);
+    document.getElementById('m-who').textContent=this.pending.battleTag||this.pending.name;
+    document.getElementById('m-title').textContent='블랙리스트 등록 · '+this.pending.name;
+    document.getElementById('m-reason').value='';
+    document.getElementById('mask').classList.add('on');
+    setTimeout(()=>document.getElementById('m-reason').focus(),50);
+  },
+  closeModal(){ document.getElementById('mask').classList.remove('on'); this.pending=null; },
+  confirmBlack(){ if(!this.pending)return;
+    this.send({action:'addBlack', name:this.pending.name, battleTag:this.pending.battleTag,
+      reason:document.getElementById('m-reason').value.trim()});
+    this.closeModal();
+  }
+};
+window.hl=hl;
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') hl.closeModal(); });
+hl.send({action:'ready'});
+</script>
+</body>
+</html>

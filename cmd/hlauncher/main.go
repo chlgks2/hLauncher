@@ -1,10 +1,11 @@
-// Command hlauncher is an anti-cheat launcher for StarCraft: it monitors for
-// the Battle.net and StarCraft processes and injects the bundled detector
-// module (kDetector.k) into the game. It runs as a system-tray application.
+// Command hlauncher is a personal StarCraft: Remastered launcher: it reads the
+// current room's participants from game memory, identifies them by battleTag,
+// and manages a blacklist of bad actors. It runs as a WebView2 desktop app.
 package main
 
 import (
 	"os"
+	"runtime"
 
 	"github.com/lxn/walk"
 
@@ -13,6 +14,11 @@ import (
 	"github.com/hlauncher/hlauncher/internal/ui"
 	"github.com/hlauncher/hlauncher/internal/version"
 )
+
+func init() {
+	// The WebView2 window must run on one OS thread.
+	runtime.LockOSThread()
+}
 
 func main() {
 	// Enforce a single running instance.
@@ -33,18 +39,13 @@ func main() {
 		return
 	}
 
-	tray, err := ui.NewTray(a)
-	if err != nil {
-		fatal("트레이 생성 실패", err)
-		return
-	}
-	defer tray.Dispose()
-
 	a.Start()
 	defer a.Stop()
 
-	// Enter the Windows message loop; blocks until the user exits.
-	tray.Run()
+	// Opens the window and blocks in its message loop until closed.
+	if err := ui.Run(a); err != nil {
+		fatal("UI 실행 실패", err)
+	}
 }
 
 func fatal(title string, err error) {
