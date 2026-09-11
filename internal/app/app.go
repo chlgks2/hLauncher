@@ -58,6 +58,7 @@ type App struct {
 	Pipe   *pipe.KLauncherPipe
 	Detect   *detect.Engine
 	Black    *blacklist.List
+	White    *blacklist.List // trusted/favorite users (reason field = memo)
 	Identity *identity.Store
 	Recents  *recents.Store
 
@@ -164,6 +165,16 @@ func New() (*App, error) {
 		bl, _ = blacklist.Load("") // empty
 	}
 	a.Black = bl
+
+	// Whitelist (trusted/favorite users) — same structure as the blacklist; the
+	// "reason" field holds a memo.
+	wl, err := blacklist.Load(filepath.Join(p.DataDir, "whitelist.json"))
+	if err != nil {
+		a.logf("warn", "화이트리스트 로드 실패: %v", err)
+		wl, _ = blacklist.Load("")
+	}
+	a.White = wl
+
 	a.seenBlack = make(map[string]bool)
 	a.roomStop = make(chan struct{})
 	a.roomDone = make(chan struct{})
@@ -257,6 +268,25 @@ func (a *App) AddBlack(battleTag, name, reason string) error {
 
 // RemoveBlack removes a blacklist entry by its identifier.
 func (a *App) RemoveBlack(id string) error { return a.Black.Remove(id) }
+
+// AddWhite adds a trusted/favorite user (memo optional).
+func (a *App) AddWhite(battleTag, name, memo string) error {
+	id := battleTag
+	if id == "" {
+		id = name
+	}
+	if id == "" {
+		return fmt.Errorf("식별자(배틀태그 또는 이름)가 필요합니다")
+	}
+	if err := a.White.Add(id, name, memo); err != nil {
+		return err
+	}
+	a.logf("info", "화이트 등록: %s", id)
+	return nil
+}
+
+// RemoveWhite removes a whitelist entry by its identifier.
+func (a *App) RemoveWhite(id string) error { return a.White.Remove(id) }
 
 // RemoveRecent deletes an entry from the recent-players history by its key.
 func (a *App) RemoveRecent(key string) {

@@ -36,6 +36,7 @@ type wsPlayer struct {
 	Race      string `json:"race"`
 	BattleTag string `json:"battleTag"`
 	Black     string `json:"black"`
+	White     bool   `json:"white"`
 	Me        bool   `json:"me"`
 }
 
@@ -85,6 +86,7 @@ func Run(a *app.App) error {
 		u.ready = true
 		u.pushStatus()
 		u.pushBlacklist()
+		u.pushWhitelist()
 		u.pushRecents()
 		u.refreshRoster()
 	})
@@ -98,6 +100,17 @@ func Run(a *app.App) error {
 	w.Bind("hlRemoveBlack", func(id string) {
 		_ = a.RemoveBlack(id)
 		u.pushBlacklist()
+		u.refreshRoster()
+	})
+	w.Bind("hlWhitelist", func() { u.pushWhitelist() })
+	w.Bind("hlAddWhite", func(name, tag, memo string) {
+		_ = a.AddWhite(tag, name, memo)
+		u.pushWhitelist()
+		u.refreshRoster()
+	})
+	w.Bind("hlRemoveWhite", func(id string) {
+		_ = a.RemoveWhite(id)
+		u.pushWhitelist()
 		u.refreshRoster()
 	})
 	w.Bind("hlRemoveRecent", func(key string) {
@@ -152,9 +165,10 @@ func (u *webUI) sendRoster(parts []roster.Participant, hits []app.BlackHit, froz
 	}
 	players := make([]wsPlayer, 0, len(parts))
 	for _, p := range parts {
+		_, white := u.app.White.Match(p.BattleTag, p.Name)
 		players = append(players, wsPlayer{
 			Slot: p.SlotID, Name: p.Name, Ping: p.Latency, Race: p.Race,
-			BattleTag: p.BattleTag, Black: reason[p.Name], Me: p.Local,
+			BattleTag: p.BattleTag, Black: reason[p.Name], White: white, Me: p.Local,
 		})
 	}
 	pj, _ := json.Marshal(players)
@@ -188,6 +202,23 @@ func (u *webUI) pushBlacklist() {
 	}
 	pj, _ := json.Marshal(rows)
 	u.eval("hl.setBlack(" + string(pj) + ")")
+}
+
+func (u *webUI) pushWhitelist() {
+	entries := u.app.White.All()
+	rows := make([]wsBlack, 0, len(entries))
+	for _, e := range entries {
+		id := e.BattleTag
+		if id == "" {
+			id = e.Name
+		}
+		rows = append(rows, wsBlack{
+			ID: id, Name: e.Name, Reason: e.Reason,
+			Added: e.AddedAt.Format("2006-01-02"),
+		})
+	}
+	pj, _ := json.Marshal(rows)
+	u.eval("hl.setWhite(" + string(pj) + ")")
 }
 
 func relTime(t time.Time) string {

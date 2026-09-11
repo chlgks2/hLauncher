@@ -94,6 +94,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
 .btn.sm{height:27px;padding:0 9px;font-size:11.5px}
 .btn.danger{color:var(--danger);border-color:var(--border-danger)}
 .btn.danger:hover{background:var(--bg-danger)}
+.btn.star{color:var(--warning)}
+.btn.star:hover{background:var(--bg-warning);border-color:var(--warning)}
+.btn.star.on{color:#ffcf4d}
+.brow.white{border-color:rgba(67,194,107,.35)}
+.rsn.white{background:var(--bg-success);color:var(--success)}
 
 /* alert strip */
 .alert{display:none;align-items:center;gap:9px;padding:10px 14px;border-radius:var(--radius);
@@ -108,6 +113,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
 .card:hover{border-color:var(--border-strong);background:var(--surface-3)}
 .card.black{border-color:var(--border-danger);background:linear-gradient(90deg,var(--bg-danger),var(--surface-2) 60%)}
 .card.me{border-color:rgba(59,130,246,.4);background:linear-gradient(90deg,var(--bg-accent),var(--surface-2) 55%)}
+.card.white{border-color:rgba(67,194,107,.4);background:linear-gradient(90deg,var(--bg-success),var(--surface-2) 60%)}
 .av{width:34px;height:34px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;
   justify-content:center;font-size:12px;font-weight:700;color:#fff;
   background:linear-gradient(135deg,#475569,#334155)}
@@ -115,6 +121,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
 .av.z{background:linear-gradient(135deg,#7c4dd6,#5b2fae)}
 .av.p{background:linear-gradient(135deg,#e0a93c,#c07f22)}
 .av.black{background:linear-gradient(135deg,#ef4444,#b91c1c)}
+.av.white{background:linear-gradient(135deg,#43c26b,#2a9d54)}
 .who{min-width:0;flex:1}
 .who .nm{font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:6px}
 .who .nm .txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
@@ -135,6 +142,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
 .ping.g{color:var(--success)}.ping.a{color:var(--warning)}.ping.b{color:var(--danger)}
 .pill{font-size:11px;padding:3px 9px;border-radius:20px;flex-shrink:0;white-space:nowrap}
 .pill.black{background:var(--bg-danger);color:var(--danger)}
+.pill.white{background:var(--bg-success);color:var(--success)}
 .pill.me{background:var(--bg-accent);color:var(--accent)}
 .act{flex-shrink:0;display:flex;gap:5px}
 
@@ -190,6 +198,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
     <nav class="nav">
       <a id="nav-roster" class="on" onclick="hl.nav('roster')"><span class="ic">👥</span>방 참가자<span class="cnt" id="nav-roster-cnt"></span></a>
       <a id="nav-black" onclick="hl.nav('black')"><span class="ic">⛔</span>블랙리스트<span class="cnt" id="nav-black-cnt"></span></a>
+      <a id="nav-white" onclick="hl.nav('white')"><span class="ic">⭐</span>화이트리스트<span class="cnt" id="nav-white-cnt"></span></a>
       <a id="nav-recent" onclick="hl.nav('recent')"><span class="ic">🕒</span>최근 플레이<span class="cnt" id="nav-recent-cnt"></span></a>
     </nav>
     <div class="foot">
@@ -234,6 +243,15 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
         <div class="blist" id="black-rows"></div>
       </section>
 
+      <!-- WHITELIST VIEW -->
+      <section id="view-white" class="view">
+        <div class="shead">
+          <div class="t">⭐ 화이트리스트 <span class="sub" id="white-sub"></span></div>
+          <span class="sp"></span>
+        </div>
+        <div class="blist" id="white-rows"></div>
+      </section>
+
       <!-- RECENT PLAY VIEW -->
       <section id="view-recent" class="view">
         <div class="shead">
@@ -254,26 +272,29 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
   <div class="modal">
     <h3 id="m-title">블랙리스트 등록</h3>
     <div class="who2" id="m-who"></div>
-    <label>차단 사유</label>
-    <textarea id="m-reason" rows="3" placeholder="예: 4:4 팀플에서 불리해지면 탈주"></textarea>
+    <label id="m-label">차단 사유</label>
+    <textarea id="m-reason" rows="3"></textarea>
     <div class="btns">
       <button class="btn" onclick="hl.closeModal()">취소</button>
-      <button class="btn pri" onclick="hl.confirmBlack()">등록</button>
+      <button class="btn pri" onclick="hl.confirmModal()">등록</button>
     </div>
   </div>
 </div>
 
 <script>
 const hl = {
-  state:{view:'roster', roster:[], black:[], recent:[], summary:{}},
-  pending:null,
+  state:{view:'roster', roster:[], black:[], white:[], recent:[], summary:{}},
+  pending:null, pendingKind:'black',
 
   send(o){ try{
       if(o.action==='ready'&&window.hlReady) window.hlReady();
       else if(o.action==='refresh'&&window.hlRefresh) window.hlRefresh();
       else if(o.action==='recents'&&window.hlRecents) window.hlRecents();
+      else if(o.action==='whitelist'&&window.hlWhitelist) window.hlWhitelist();
       else if(o.action==='addBlack'&&window.hlAddBlack) window.hlAddBlack(o.name||'',o.battleTag||'',o.reason||'');
       else if(o.action==='removeBlack'&&window.hlRemoveBlack) window.hlRemoveBlack(o.id||'');
+      else if(o.action==='addWhite'&&window.hlAddWhite) window.hlAddWhite(o.name||'',o.battleTag||'',o.reason||'');
+      else if(o.action==='removeWhite'&&window.hlRemoveWhite) window.hlRemoveWhite(o.id||'');
       else if(o.action==='removeRecent'&&window.hlRemoveRecent) window.hlRemoveRecent(o.key||'');
     }catch(e){} },
 
@@ -296,10 +317,11 @@ const hl = {
 
   esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); },
 
-  nav(v){ this.state.view=v; if(v==='recent') this.send({action:'recents'}); this.render(); },
+  nav(v){ this.state.view=v; if(v==='recent') this.send({action:'recents'}); if(v==='white') this.send({action:'whitelist'}); this.render(); },
 
   setRoster(r){ this.state.roster=r||[]; if(this.state.view==='roster') this.renderRoster(); this.renderNavCounts(); },
   setBlack(b){ this.state.black=b||[]; if(this.state.view==='black') this.renderBlack(); this.renderNavCounts(); },
+  setWhite(w){ this.state.white=w||[]; if(this.state.view==='white') this.renderWhite(); this.renderNavCounts(); },
   setRecents(r){ this.state.recent=r||[]; if(this.state.view==='recent') this.renderRecent(); this.renderNavCounts(); },
   setSummary(s){ this.state.summary=s||{}; this.renderSummary(); },
   setStatus(s){
@@ -311,16 +333,17 @@ const hl = {
   },
 
   render(){
-    ['roster','black','recent'].forEach(v=>{
+    ['roster','black','white','recent'].forEach(v=>{
       document.getElementById('nav-'+v).classList.toggle('on',this.state.view===v);
       document.getElementById('view-'+v).classList.toggle('on',this.state.view===v);
     });
-    this.renderRoster(); this.renderBlack(); this.renderRecent();
+    this.renderRoster(); this.renderBlack(); this.renderWhite(); this.renderRecent();
   },
 
   renderNavCounts(){
     document.getElementById('nav-roster-cnt').textContent=this.state.roster.length||'';
     document.getElementById('nav-black-cnt').textContent=this.state.black.length||'';
+    document.getElementById('nav-white-cnt').textContent=this.state.white.length||'';
     document.getElementById('nav-recent-cnt').textContent=this.state.recent.length||'';
   },
 
@@ -360,27 +383,33 @@ const hl = {
       return;
     }
     box.innerHTML=r.map(p=>{
-      const ri=this.raceInfo(p.race), black=!!p.black, me=!!p.me;
+      const ri=this.raceInfo(p.race), black=!!p.black, white=!!p.white, me=!!p.me;
       const cpN=this.cpBtn(p.name,'닉네임');
+      const id=this.esc(p.battleTag||p.name);
+      const pdata=JSON.stringify(JSON.stringify({name:p.name,battleTag:p.battleTag||""}));
       const tag=p.battleTag
         ? '<div class="tag"><span class="txt">'+this.esc(p.battleTag)+'</span>'+this.cpBtn(p.battleTag,'배틀태그')+'</div>'
         : '<div class="tag none"><span class="txt">배틀태그 미확인</span></div>';
       const ping=p.ping<0?'-':p.ping;
       let pill='';
       if(black) pill='<span class="pill black" title="'+this.esc(p.black)+'">⛔ '+this.esc(p.black)+'</span>';
+      else if(white) pill='<span class="pill white">⭐ 즐겨찾기</span>';
       else if(me) pill='<span class="pill me">나</span>';
-      const btn = black
-        ? '<button class="btn sm" onclick=\'hl.send({action:"removeBlack",id:"'+this.esc(p.battleTag||p.name)+'"})\'>해제</button>'
-        : '<button class="btn sm danger" onclick=\'hl.openModal('+JSON.stringify(JSON.stringify({name:p.name,battleTag:p.battleTag||""}))+')\'>⛔ 블랙</button>';
-      const avc = black?'black':ri.c;
-      return '<div class="card'+(black?' black':(me?' me':''))+'">'
+      const wbtn = white
+        ? '<button class="btn sm star on" title="화이트 해제" onclick=\'hl.send({action:"removeWhite",id:"'+id+'"})\'>⭐</button>'
+        : '<button class="btn sm star" title="화이트 등록" onclick=\'hl.openModal('+pdata+',"white")\'>☆</button>';
+      const bbtn = black
+        ? '<button class="btn sm" title="블랙 해제" onclick=\'hl.send({action:"removeBlack",id:"'+id+'"})\'>해제</button>'
+        : '<button class="btn sm danger" title="블랙 등록" onclick=\'hl.openModal('+pdata+',"black")\'>⛔</button>';
+      const avc = black?'black':(white?'white':ri.c);
+      return '<div class="card'+(black?' black':(white?' white':(me?' me':'')))+'">'
         +'<div class="av '+avc+'">'+this.esc(this.initials(p.name))+'</div>'
         +'<div class="who"><div class="nm"><span class="txt">'+this.esc(p.name)+'</span>'
         +'<span class="slot">#'+p.slot+'</span>'+cpN+'</div>'+tag+'</div>'
         +'<div class="race">'+ri.k+'</div>'
         +'<div class="ping '+this.pingCls(p.ping)+'">'+ping+'</div>'
         +(pill?'<div style="flex-shrink:0">'+pill+'</div>':'')
-        +'<div class="act">'+btn+'</div></div>';
+        +'<div class="act">'+wbtn+bbtn+'</div></div>';
     }).join('');
   },
 
@@ -400,6 +429,22 @@ const hl = {
     ).join('');
   },
 
+  renderWhite(){
+    const box=document.getElementById('white-rows'); if(!box)return;
+    document.getElementById('white-sub').textContent=this.state.white.length+'명';
+    const b=this.state.white;
+    if(!b.length){ box.innerHTML='<div class="empty"><div class="big">⭐</div><div class="t">등록된 화이트리스트가 없습니다</div><div class="d">방 참가자에서 유저를 ⭐로 등록하세요</div></div>'; return; }
+    box.innerHTML=b.map(e=>
+      '<div class="brow white"><div class="av white">'+this.esc(this.initials(e.name||e.id))+'</div>'
+      +'<div class="who"><div class="nm"><span class="txt">'+this.esc(e.name||'(이름없음)')+'</span>'
+      +(e.name?this.cpBtn(e.name,'닉네임'):'')+'</div>'
+      +'<div class="tag"><span class="txt">'+this.esc(e.id)+'</span>'+this.cpBtn(e.id,'배틀태그')+'</div></div>'
+      +'<span class="rsn white" title="'+this.esc(e.reason)+'">'+this.esc(e.reason||'(메모 없음)')+'</span>'
+      +'<span class="dt">'+this.esc(e.added)+'</span>'
+      +'<button class="btn sm" onclick=\'hl.send({action:"removeWhite",id:"'+this.esc(e.id)+'"})\'>해제</button></div>'
+    ).join('');
+  },
+
   renderRecent(){
     const box=document.getElementById('recent-rows'); if(!box)return;
     document.getElementById('recent-sub').textContent=this.state.recent.length+'명';
@@ -409,28 +454,33 @@ const hl = {
       const tag=e.battleTag
         ? '<div class="tag"><span class="txt">'+this.esc(e.battleTag)+'</span>'+this.cpBtn(e.battleTag,'배틀태그')+'</div>'
         : '<div class="tag none"><span class="txt">배틀태그 미확인</span></div>';
-      const blackBtn='<button class="btn sm danger" onclick=\'hl.openModal('
-        +JSON.stringify(JSON.stringify({name:e.name,battleTag:e.battleTag||""}))+')\'>⛔ 블랙</button>';
+      const pdata=JSON.stringify(JSON.stringify({name:e.name,battleTag:e.battleTag||""}));
+      const whiteBtn='<button class="btn sm star" title="화이트 등록" onclick=\'hl.openModal('+pdata+',"white")\'>☆</button>';
+      const blackBtn='<button class="btn sm danger" title="블랙 등록" onclick=\'hl.openModal('+pdata+',"black")\'>⛔</button>';
       return '<div class="brow"><div class="av">'+this.esc(this.initials(e.name))+'</div>'
         +'<div class="who"><div class="nm"><span class="txt">'+this.esc(e.name)+'</span>'+this.cpBtn(e.name,'닉네임')+'</div>'+tag+'</div>'
         +'<span class="cntpill">'+e.count+'회</span>'
         +'<span class="dt">'+this.esc(e.lastSeen)+'</span>'
-        +blackBtn
+        +whiteBtn+blackBtn
         +'<button class="btn sm" title="기록 삭제" onclick=\'hl.send({action:"removeRecent",key:"'+this.esc(e.key)+'"})\'>✕</button></div>';
     }).join('');
   },
 
-  openModal(dataStr){ this.pending=JSON.parse(dataStr);
+  openModal(dataStr,kind){ this.pending=JSON.parse(dataStr); this.pendingKind=kind||'black';
+    const white=this.pendingKind==='white';
     document.getElementById('m-who').textContent=this.pending.battleTag||this.pending.name;
-    document.getElementById('m-title').textContent='블랙리스트 등록 · '+this.pending.name;
-    document.getElementById('m-reason').value='';
+    document.getElementById('m-title').textContent=(white?'⭐ 화이트리스트 등록 · ':'⛔ 블랙리스트 등록 · ')+this.pending.name;
+    document.getElementById('m-label').textContent=white?'메모 (선택)':'차단 사유';
+    const ta=document.getElementById('m-reason');
+    ta.value=''; ta.placeholder=white?'예: 자주 같이하는 좋은 유저':'예: 4:4 팀플에서 불리해지면 탈주';
     document.getElementById('mask').classList.add('on');
-    setTimeout(()=>document.getElementById('m-reason').focus(),50);
+    setTimeout(()=>ta.focus(),50);
   },
   closeModal(){ document.getElementById('mask').classList.remove('on'); this.pending=null; },
-  confirmBlack(){ if(!this.pending)return;
-    this.send({action:'addBlack', name:this.pending.name, battleTag:this.pending.battleTag,
-      reason:document.getElementById('m-reason').value.trim()});
+  confirmModal(){ if(!this.pending)return;
+    const reason=document.getElementById('m-reason').value.trim();
+    const act=this.pendingKind==='white'?'addWhite':'addBlack';
+    this.send({action:act, name:this.pending.name, battleTag:this.pending.battleTag, reason:reason});
     this.closeModal();
   }
 };
