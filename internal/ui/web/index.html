@@ -88,6 +88,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
   background:rgba(255,255,255,.04);color:var(--text);font-size:12.5px;cursor:pointer;
   display:inline-flex;align-items:center;gap:6px;font-family:var(--sans);transition:.12s}
 .btn:hover{background:rgba(255,255,255,.09);border-color:var(--accent)}
+.btn:active,.cp:active,.donate:active{transform:scale(.96)}
+.flashed{animation:btnpulse .5s ease}
+@keyframes btnpulse{0%{border-color:var(--accent);box-shadow:0 0 0 3px rgba(76,155,255,.35),0 0 14px rgba(76,155,255,.55)}100%{box-shadow:0 0 0 0 rgba(76,155,255,0)}}
 .btn.pri{background:linear-gradient(135deg,#3b82f6,#2563eb);border-color:transparent;font-weight:600;
   box-shadow:0 2px 10px rgba(59,130,246,.35)}
 .btn.pri:hover{filter:brightness(1.1)}
@@ -485,6 +488,7 @@ const hl = {
   }
 };
 window.hl=hl;
+document.addEventListener('click',e=>{ const b=e.target.closest('.btn,.cp,.donate'); if(b){ b.classList.remove('flashed'); void b.offsetWidth; b.classList.add('flashed'); setTimeout(()=>b.classList.remove('flashed'),360);} },true);
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') hl.closeModal(); });
 hl.send({action:'ready'});
 </script>

@@ -86,7 +86,10 @@ type App struct {
 	lastLobby []roster.Participant // last live lobby roster, fallback while loading
 
 	lastInGame     []roster.Participant // cached in-game engine roster
-	lastInGameScan time.Time            // when lastInGame was last scanned
+	lastInGameScan time.Time            // when a full in-game scan last ran
+	inGameBase     uintptr              // cached address of the engine player array (fast re-read)
+	inGameStable   int                  // consecutive full scans with an unchanged count (to back off)
+	inGameCount    int                  // player count at the last full scan
 	ingamePrev     map[string]string    // key->name of the last in-game roster (drop detection)
 
 	pubParts  []roster.Participant // last roster published to the UI
@@ -323,9 +326,9 @@ func (a *App) Displayed() ([]roster.Participant, []BlackHit, bool) {
 func (a *App) roomLoop() {
 	defer close(a.roomDone)
 	const (
-		fast = 3 * time.Second  // in a lobby: refresh participants often
-		mid  = 6 * time.Second  // in the chat channel: keep harvesting battleTags
-		slow = 20 * time.Second // in an actual match / no data: near-idle probe
+		fast = 1 * time.Second  // in a lobby: refresh participants fast (no live game to disturb)
+		mid  = 5 * time.Second  // in the chat channel: keep harvesting battleTags
+		slow = 15 * time.Second // in an actual match: engine array is cheap to re-read
 	)
 	interval := fast
 	timer := time.NewTimer(interval)
@@ -338,6 +341,17 @@ func (a *App) roomLoop() {
 			interval = fast
 		case roster.StateChannel:
 			interval = mid
+		case roster.StateInGame:
+			// Tick often while the in-game roster is still converging on the full
+			// player list; once it's settled, back off (the array is stable).
+			a.mu.Lock()
+			settled := a.inGameStable >= 2
+			a.mu.Unlock()
+			if settled {
+				interval = slow
+			} else {
+				interval = 3 * time.Second
+			}
 		default:
 			interval = slow
 		}
@@ -359,7 +373,8 @@ func (a *App) roomLoop() {
 // bypassing the in-game scan throttle so the roster reflects the live game.
 func (a *App) RefreshNow() {
 	a.mu.Lock()
-	a.lastInGameScan = time.Time{}
+	a.lastInGameScan = time.Time{} // force a fresh in-game scan
+	a.inGameBase = 0               // re-find the array from scratch
 	a.mu.Unlock()
 	select {
 	case a.roomWake <- struct{}{}:
@@ -377,7 +392,7 @@ func (a *App) scanRoom() roster.State {
 	st := a.Status()
 	if !st.StarCraft.Running {
 		a.mu.Lock()
-		a.lastLobby, a.lastInGame, a.ingamePrev = nil, nil, nil // game gone: drop caches
+		a.lastLobby, a.lastInGame, a.ingamePrev, a.inGameBase, a.inGameStable, a.inGameCount = nil, nil, nil, 0, 0, 0 // game gone: drop caches
 		a.mu.Unlock()
 		return roster.StateIdle
 	}
@@ -386,7 +401,7 @@ func (a *App) scanRoom() roster.State {
 		a.lastSCPID = st.StarCraft.PID
 		a.mu.Lock()
 		a.seenBlack = make(map[string]bool)
-		a.lastLobby, a.lastInGame, a.ingamePrev = nil, nil, nil
+		a.lastLobby, a.lastInGame, a.ingamePrev, a.inGameBase, a.inGameStable, a.inGameCount = nil, nil, nil, 0, 0, 0
 		a.mu.Unlock()
 	}
 
@@ -396,48 +411,37 @@ func (a *App) scanRoom() roster.State {
 	}
 	_ = a.Identity.Save() // persist any newly-captured battleTags
 
+	// roster.Read classifies the screen by JSON liveness: Lobby (a real room),
+	// Channel (Battle.net menu/channel — JSON alive but no room), or Idle (JSON
+	// destroyed → in an actual match). This lets us clear the roster the moment
+	// you leave a game (JSON revives → Channel), instead of showing the stale
+	// engine array that lingers in memory after the match.
 	switch state {
 	case roster.StateLobby:
-		if len(parts) >= 2 {
-			// Clear multi-player lobby: show it live (with ping) and drop any
-			// previous match's in-game cache — a new game is being set up.
-			a.mu.Lock()
-			a.lastLobby = parts
-			a.lastInGame, a.ingamePrev = nil, nil
-			a.mu.Unlock()
-			a.publishRoster(parts, false)
-			break
-		}
-		// Only one SetPlayerData human. That's either a lobby you're hosting
-		// alone, or the local player's entry lingering into an actual match
-		// (the others' lobby JSON is already destroyed). The engine player array
-		// disambiguates: if it lists more players, we're really in-game.
-		if ig := a.inGameRoster(st.StarCraft.PID); len(ig) > len(parts) {
-			state = roster.StateInGame
-			res := a.resolveTags(ig)
-			a.publishRoster(res, true)
-			a.detectDrops(res)
-		} else {
-			a.mu.Lock()
-			a.lastLobby = parts
-			a.ingamePrev = nil
-			a.mu.Unlock()
-			a.publishRoster(parts, false)
-		}
+		a.mu.Lock()
+		a.lastLobby = parts
+		a.ingamePrev = nil
+		a.mu.Unlock()
+		a.publishRoster(parts, false)
+	case roster.StateChannel:
+		// In the Battle.net menu/channel, not in a match: clear (and drop the
+		// stale in-game array cache so it can't resurface).
+		a.mu.Lock()
+		a.lastLobby, a.ingamePrev, a.inGameBase, a.inGameStable, a.inGameCount = nil, nil, 0, 0, 0
+		a.mu.Unlock()
+		a.publishRoster(nil, false)
 	default:
-		// No SetPlayerData lobby (StateChannel while browsing the chat channel, or
-		// StateIdle in an actual match / a plain menu). The engine player array is
-		// the reliable signal — battleTag fragments linger in memory in-game too,
-		// so we can't tell a match from the channel by those alone. If the array
-		// has players, we're in a match; otherwise we've left the room, so clear.
-		if ig := a.inGameRoster(st.StarCraft.PID); len(ig) > 0 {
+		// StateIdle: the lobby/channel JSON is gone → we're in an actual match.
+		// Show the engine player array (authoritative during play).
+		ig := a.inGameRoster(st.StarCraft.PID)
+		if len(ig) >= 1 {
 			state = roster.StateInGame
 			res := a.resolveTags(ig)
 			a.publishRoster(res, true)
 			a.detectDrops(res)
 		} else {
 			a.mu.Lock()
-			a.lastLobby, a.lastInGame, a.ingamePrev = nil, nil, nil
+			a.lastLobby, a.ingamePrev = nil, nil
 			a.mu.Unlock()
 			a.publishRoster(nil, false)
 		}
@@ -485,22 +489,60 @@ func (a *App) detectDrops(cur []roster.Participant) {
 	}
 }
 
-// inGameRoster returns the engine's in-game player array, scanned at most every
-// 8-25s and cached (the array is stable during a match, and the scan is heavy).
+// inGameRoster returns the engine's in-game player array. It re-reads the cached
+// array address cheaply for responsiveness, and periodically runs a full scan to
+// adopt a *more complete* array copy — because several copies exist in memory and
+// a partial one (loaded mid game-start) can otherwise get stuck cached. The full
+// scan backs off to a long interval once the player count is stable.
 func (a *App) inGameRoster(pid uint32) []roster.Participant {
 	a.mu.Lock()
-	wait := 25 * time.Second
-	if len(a.lastInGame) == 0 {
-		wait = 8 * time.Second
+	base := a.inGameBase
+	interval := 3 * time.Second // converging: rescan often to catch the full array
+	if a.inGameStable >= 2 {
+		interval = 30 * time.Second // count settled: rescan rarely (cheap)
 	}
-	due := time.Since(a.lastInGameScan) > wait
+	rescanDue := time.Since(a.lastInGameScan) > interval
 	a.mu.Unlock()
-	if due {
-		ig, _ := roster.InGamePlayers(pid, a.Identity)
+
+	// Cheap fast read at the cached address.
+	var fast []roster.Participant
+	if base != 0 {
+		if players, ok, _ := roster.InGameAt(pid, base, a.Identity); ok {
+			fast = players
+		} else {
+			a.mu.Lock()
+			a.inGameBase = 0
+			a.mu.Unlock()
+			base = 0
+		}
+	}
+
+	// Periodic full re-scan to catch the fullest array copy.
+	if base == 0 || rescanDue {
+		full, nb, _ := roster.InGameScan(pid, a.Identity)
 		a.mu.Lock()
-		a.lastInGame = ig
 		a.lastInGameScan = time.Now()
+		chosen := fast
+		if len(full) >= len(fast) {
+			chosen = full
+			a.inGameBase = nb
+		}
+		if len(chosen) == a.inGameCount {
+			a.inGameStable++
+		} else {
+			a.inGameStable = 0
+		}
+		a.inGameCount = len(chosen)
+		a.lastInGame = chosen
 		a.mu.Unlock()
+		return chosen
+	}
+
+	if fast != nil {
+		a.mu.Lock()
+		a.lastInGame = fast
+		a.mu.Unlock()
+		return fast
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

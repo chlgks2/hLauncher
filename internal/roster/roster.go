@@ -56,7 +56,7 @@ func Read(pid uint32, store *identity.Store) ([]Participant, State, error) {
 	// gone); battleTag capture also works in the chat channel, where join events
 	// flow before you enter a room. Doing both in one pass halves the per-scan
 	// memory read — the main cost that made frequent scans lag the game.
-	slots, tags, localSlot := scanLobby(p, store)
+	slots, _, localSlot, jsonCount := scanLobby(p, store)
 	inLobby := false
 	for _, s := range slots {
 		if s.State == "human" && s.Name != "" {
@@ -65,15 +65,21 @@ func Read(pid uint32, store *identity.Store) ([]Participant, State, error) {
 		}
 	}
 
-	// A chat channel carries many join events; a match has at most a stray tag
-	// fragment. Require several so in-game isn't misread as the channel (which
-	// would skip the in-game player-array scan).
+	// jsonAlive: the Battle.net UI (menu/channel/lobby) keeps HUNDREDS of JSON
+	// "endpoint" events in memory (a busy channel was ~570). An actual match
+	// destroys them — only a few dozen stale fragments remain (measured ~34). So
+	// a high count means we're in Battle.net (not a match); a low count means
+	// we're in a live game. This tells "left the game" (JSON revived) apart from
+	// "still in the match", and stops a match being misread as the channel.
+	jsonAlive := jsonCount >= 150
 	state := StateIdle
 	switch {
-	case inLobby:
+	case inLobby && jsonAlive:
 		state = StateLobby
-	case tags >= 4:
+	case jsonAlive:
 		state = StateChannel
+	default:
+		state = StateIdle // JSON destroyed → in an actual match
 	}
 
 	byName := make(map[string]Participant)
@@ -102,19 +108,48 @@ func Read(pid uint32, store *identity.Store) ([]Participant, State, error) {
 // InGamePlayers reads the in-game engine player array for pid and resolves
 // battleTags from store (diagnostic / test entrypoint).
 func InGamePlayers(pid uint32, store *identity.Store) ([]Participant, error) {
+	parts, _, err := InGameScan(pid, store)
+	return parts, err
+}
+
+// InGameScan does a full memory scan to find the in-game player array. It returns
+// the named players AND the array's base address, so the caller can cache the
+// address and re-read it cheaply with InGameAt instead of rescanning every time.
+func InGameScan(pid uint32, store *identity.Store) ([]Participant, uintptr, error) {
 	p, err := memscan.Open(pid)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer p.Close()
-	parts := readInGamePlayers(p)
+	parts, base := scanInGame(p)
+	resolveInto(parts, store)
+	return parts, base, nil
+}
+
+// InGameAt re-reads the player array at a previously-found base address (fast:
+// one small read, no full scan). ok is false if the address no longer holds a
+// valid array (the caller should then InGameScan again).
+func InGameAt(pid uint32, base uintptr, store *identity.Store) ([]Participant, bool, error) {
+	if base == 0 {
+		return nil, false, nil
+	}
+	p, err := memscan.Open(pid)
+	if err != nil {
+		return nil, false, err
+	}
+	defer p.Close()
+	parts := readInGameAt(p, base)
+	resolveInto(parts, store)
+	return parts, len(parts) > 0, nil
+}
+
+func resolveInto(parts []Participant, store *identity.Store) {
 	for i := range parts {
 		if rec, ok := store.LookupName(parts[i].Name); ok {
 			parts[i].BattleTag = rec.BattleTag
 			parts[i].ToonID = rec.Toon
 		}
 	}
-	return parts, nil
 }
 
 // CaptureIdentities opens pid, harvests name->battleTag identities into store,
@@ -231,11 +266,15 @@ func captureProfileStructs(data []byte, store *identity.Store) {
 // and captures battleTag identities (JSON events + profile structs). Returns the
 // slots and the JSON battleTag count. One pass ≈ half the cost of scanning for
 // each separately.
-func scanLobby(p *memscan.Process, store *identity.Store) (slots []Participant, tags, localSlot int) {
+func scanLobby(p *memscan.Process, store *identity.Store) (slots []Participant, tags, localSlot, jsonCount int) {
 	spd := []byte(`"endpoint":"SetPlayerData"`)
 	slp := []byte(`"endpoint":"SetLocalPlayer"`)
+	endpoint := []byte(`"endpoint":"`)
 	localSlot = -1
 	p.ScanChunks(1<<20, func(base uintptr, data []byte) {
+		// Count JSON events present — the Battle.net UI keeps hundreds; a match
+		// destroys them. Used to tell "in Battle.net" from "in a live game".
+		jsonCount += len(memscan.IndexAll(data, endpoint))
 		// The local player's slot: "SetLocalPlayer","data":{"id":N,...}
 		for _, idx := range memscan.IndexAll(data, slp) {
 			hi := idx + 60
@@ -269,7 +308,7 @@ func scanLobby(p *memscan.Process, store *identity.Store) (slots []Participant, 
 		}
 		tags += captureChunk(data, store)
 	})
-	return slots, tags, localSlot
+	return slots, tags, localSlot, jsonCount
 }
 
 // field extracts a JSON string value: "<key>":"<value>".
@@ -321,9 +360,10 @@ func number(win []byte, key string) string {
 //
 // We locate it by signature (a run of well-formed structs), so it survives ASLR
 // with no injection. Returns the run with the most named players.
-func readInGamePlayers(p *memscan.Process) []Participant {
+func scanInGame(p *memscan.Process) ([]Participant, uintptr) {
 	const stride = 36
 	var best []Participant
+	var bestAnchor uintptr // absolute address of best run's first struct
 	p.ScanChunks(1<<20, func(base uintptr, data []byte) {
 		n := len(data) - stride
 		for i := 0; i <= n; i++ {
@@ -342,30 +382,56 @@ func readInGamePlayers(p *memscan.Process) []Participant {
 			if !playerStructAt(data, i) {
 				continue
 			}
-			// Walk consecutive struct-shaped slots from here.
-			var run []Participant
-			named := 0
-			for j := i; j+stride <= len(data) && playerStructAt(data, j); j += stride {
-				name := cstr(data[j+0x0B : j+0x0B+25])
-				typ := data[j+0x08]
-				if name != "" && typ == 2 { // human
-					named++
-					run = append(run, Participant{
-						SlotID:  int(u32(data[j:])),
-						Name:    name,
-						Race:    raceName(data[j+0x09]),
-						State:   "human",
-						Latency: -1, // ping not available from this array
-					})
-				}
-			}
+			run := parseArray(data[i:])
+			named := len(run)
 			if named > len(best) {
 				best = run
+				bestAnchor = base + uintptr(i)
 			}
-			i += stride * len(run) // skip past this run
+			i += stride * named // skip past this run
 		}
 	})
-	return best
+	var arrayBase uintptr
+	if len(best) > 0 {
+		// bestAnchor is best[0]'s struct; its playerID is the slot index, so the
+		// array's slot-0 base is that many structs earlier.
+		arrayBase = bestAnchor - uintptr(best[0].SlotID)*stride
+	}
+	return best, arrayBase
+}
+
+// readInGameAt re-reads the player array at a known base address (fast path).
+func readInGameAt(p *memscan.Process, base uintptr) []Participant {
+	const stride = 36
+	data := p.Read(base, stride*12) // up to 12 slots
+	if data == nil {
+		return nil
+	}
+	if !playerStructAt(data, 0) { // base no longer holds the array
+		return nil
+	}
+	return parseArray(data)
+}
+
+// parseArray walks consecutive 36-byte player structs from data[0] and returns
+// the named human players.
+func parseArray(data []byte) []Participant {
+	const stride = 36
+	var out []Participant
+	for j := 0; j+stride <= len(data) && playerStructAt(data, j); j += stride {
+		name := cstr(data[j+0x0B : j+0x0B+25])
+		typ := data[j+0x08]
+		if name != "" && typ == 2 { // human
+			out = append(out, Participant{
+				SlotID:  int(u32(data[j:])),
+				Name:    name,
+				Race:    raceName(data[j+0x09]),
+				State:   "human",
+				Latency: -1, // ping not available from this array
+			})
+		}
+	}
+	return out
 }
 
 // playerStructAt reports whether data[i:] plausibly begins a BroodWar player

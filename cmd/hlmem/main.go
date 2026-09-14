@@ -89,6 +89,10 @@ func main() {
 		windows.CloseHandle(h)
 		showInGame(uint32(pid64))
 		return
+	case "ingameat":
+		windows.CloseHandle(h)
+		showInGameAt(uint32(pid64))
+		return
 	case "ipscan":
 		ipscan(h)
 	case "events":
@@ -457,6 +461,21 @@ func cluster(h windows.Handle, names []string) {
 			}
 		}
 	})
+}
+
+func showInGameAt(pid uint32) {
+	store, _ := identity.Load(identityPath())
+	players, base, err := roster.InGameScan(pid, store)
+	if err != nil {
+		fmt.Println("scan failed:", err)
+		return
+	}
+	fmt.Printf("InGameScan(전체): %d명, base=%#x\n", len(players), base)
+	at, ok, err := roster.InGameAt(pid, base, store)
+	fmt.Printf("InGameAt(base): %d명 ok=%v err=%v\n", len(at), ok, err)
+	for _, p := range at {
+		fmt.Printf("  슬롯%d %-18s %s\n", p.SlotID, p.Name, p.BattleTag)
+	}
 }
 
 func showInGame(pid uint32) {
