@@ -88,10 +88,16 @@ func Run(a *app.App) error {
 		u.pushBlacklist()
 		u.pushWhitelist()
 		u.pushRecents()
+		u.pushOverlay()
 		u.refreshRoster()
 	})
 	w.Bind("hlRefresh", func() { u.app.RefreshNow(); u.refreshRoster() })
 	w.Bind("hlRecents", func() { u.pushRecents() })
+	w.Bind("hlOverlayGet", func() { u.pushOverlay() })
+	w.Bind("hlOverlaySet", func(on bool) {
+		u.app.SetOverlayEnabled(on)
+		u.pushOverlay()
+	})
 	w.Bind("hlAddBlack", func(name, tag, reason string) {
 		_ = a.AddBlack(tag, name, reason)
 		u.pushBlacklist()
@@ -250,6 +256,15 @@ func (u *webUI) pushRecents() {
 	}
 	pj, _ := json.Marshal(rows)
 	u.eval("hl.setRecents(" + string(pj) + ")")
+}
+
+// pushOverlay tells the page whether the in-game overlay is on.
+func (u *webUI) pushOverlay() {
+	b, _ := json.Marshal(map[string]bool{
+		"available": u.app.Overlay != nil,
+		"enabled":   u.app.OverlayEnabled(),
+	})
+	u.eval("hl.setOverlay(" + string(b) + ")")
 }
 
 func (u *webUI) pushStatus() {

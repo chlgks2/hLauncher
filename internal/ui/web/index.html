@@ -236,6 +236,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
           <div class="t"><span id="roster-badge"><span class="gdot"></span>방 참가자</span></div>
           <span class="sub" id="roster-sub"></span>
           <span class="sp"></span>
+          <button class="btn sm" id="ovbtn" title="게임 화면 위에 참가자 목록을 띄웁니다"
+                  onclick="hl.toggleOverlay()">🖥 오버레이</button>
           <button class="btn sm" onclick="hl.send({action:'refresh'})">🔄 새로고침</button>
         </div>
         <div class="alert" id="alert"></div>
@@ -291,7 +293,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13
 
 <script>
 const hl = {
-  state:{view:'roster', roster:[], black:[], white:[], recent:[], summary:{}},
+  state:{view:'roster', roster:[], black:[], white:[], recent:[], summary:{}, overlay:{}},
   pending:null, pendingKind:'black',
 
   send(o){ try{
@@ -304,6 +306,8 @@ const hl = {
       else if(o.action==='addWhite'&&window.hlAddWhite) window.hlAddWhite(o.name||'',o.battleTag||'',o.reason||'');
       else if(o.action==='removeWhite'&&window.hlRemoveWhite) window.hlRemoveWhite(o.id||'');
       else if(o.action==='removeRecent'&&window.hlRemoveRecent) window.hlRemoveRecent(o.key||'');
+      else if(o.action==='overlayGet'&&window.hlOverlayGet) window.hlOverlayGet();
+      else if(o.action==='overlaySet'&&window.hlOverlaySet) window.hlOverlaySet(!!o.on);
     }catch(e){} },
 
   toast(msg,type){ const box=document.getElementById('toasts'); if(!box)return;
@@ -332,6 +336,26 @@ const hl = {
   setWhite(w){ this.state.white=w||[]; if(this.state.view==='white') this.renderWhite(); this.renderNavCounts(); },
   setRecents(r){ this.state.recent=r||[]; if(this.state.view==='recent') this.renderRecent(); this.renderNavCounts(); },
   setSummary(s){ this.state.summary=s||{}; this.renderSummary(); },
+
+  // ---- 인게임 오버레이 ----
+  setOverlay(o){ this.state.overlay=o||{}; this.renderOverlay(); },
+  toggleOverlay(){
+    const o=this.state.overlay||{};
+    if(!o.available){ this.toast('오버레이를 열지 못했습니다','warn'); return; }
+    const on=!o.enabled;
+    this.state.overlay=Object.assign({},o,{enabled:on});
+    this.renderOverlay();
+    this.send({action:'overlaySet',on:on});
+    this.toast(on? '오버레이 켜짐 — 게임 창이 앞에 있을 때 표시됩니다'
+                 : '오버레이 꺼짐','');
+  },
+  renderOverlay(){
+    const b=document.getElementById('ovbtn'); if(!b) return;
+    const o=this.state.overlay||{};
+    if(!o.available){ b.textContent='🖥 오버레이 불가'; b.disabled=true; return; }
+    b.textContent = o.enabled ? '🖥 오버레이 켜짐' : '🖥 오버레이 꺼짐';
+    b.classList.toggle('pri', !!o.enabled);
+  },
   setStatus(s){
     const sc=document.getElementById('dot-sc'), bn=document.getElementById('dot-bnet');
     document.getElementById('st-sc').textContent = s.scRunning? '스타크래프트 실행 중':'스타크래프트 감지 안 됨';
@@ -345,7 +369,7 @@ const hl = {
       document.getElementById('nav-'+v).classList.toggle('on',this.state.view===v);
       document.getElementById('view-'+v).classList.toggle('on',this.state.view===v);
     });
-    this.renderRoster(); this.renderBlack(); this.renderWhite(); this.renderRecent();
+    this.renderOverlay(); this.renderRoster(); this.renderBlack(); this.renderWhite(); this.renderRecent();
   },
 
   renderNavCounts(){

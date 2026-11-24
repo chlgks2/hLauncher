@@ -18,9 +18,10 @@ import (
 	"github.com/hlauncher/hlauncher/internal/core/pipe"
 	"github.com/hlauncher/hlauncher/internal/detect"
 	"github.com/hlauncher/hlauncher/internal/identity"
-	"github.com/hlauncher/hlauncher/internal/recents"
 	"github.com/hlauncher/hlauncher/internal/inject"
 	"github.com/hlauncher/hlauncher/internal/launch"
+	"github.com/hlauncher/hlauncher/internal/overlay"
+	"github.com/hlauncher/hlauncher/internal/recents"
 	"github.com/hlauncher/hlauncher/internal/registry"
 	"github.com/hlauncher/hlauncher/internal/roster"
 	"github.com/hlauncher/hlauncher/internal/version"
@@ -50,17 +51,18 @@ var starcraftLaunchArgs = []string{"-launch", "-uid", "s1"}
 
 // App is the central launcher controller.
 type App struct {
-	Paths  *paths.AppPaths
-	Config *config.Manager
-	Reg    *registry.Reader
-	Loader *loader.DllLoader
-	Mon    *monitor.Monitor
-	Pipe   *pipe.KLauncherPipe
+	Paths    *paths.AppPaths
+	Config   *config.Manager
+	Reg      *registry.Reader
+	Loader   *loader.DllLoader
+	Mon      *monitor.Monitor
+	Pipe     *pipe.KLauncherPipe
 	Detect   *detect.Engine
 	Black    *blacklist.List
 	White    *blacklist.List // trusted/favorite users (reason field = memo)
 	Identity *identity.Store
 	Recents  *recents.Store
+	Overlay  *overlay.Overlay // in-game roster panel; nil if it could not open
 
 	selfTag        string    // the local player's battleTag (to exclude from recents)
 	lastRecentSave time.Time // throttles recents disk writes
@@ -102,7 +104,7 @@ type App struct {
 
 	roomStop  chan struct{}
 	roomDone  chan struct{}
-	roomWake  chan struct{} // forces an immediate room scan (manual refresh)
+	roomWake  chan struct{}   // forces an immediate room scan (manual refresh)
 	seenBlack map[string]bool // per-room-session: alerted black identifiers
 	lastSCPID uint32
 
@@ -578,6 +580,7 @@ func (a *App) publishRoster(parts []roster.Participant, frozen bool) {
 	a.mu.Lock()
 	a.pubParts, a.pubHits, a.pubFrozen = parts, hits, frozen
 	a.mu.Unlock()
+	a.pushOverlay(parts, hits)
 	if a.onRoster != nil {
 		a.onRoster(parts, hits, frozen)
 	}
@@ -731,6 +734,7 @@ func (a *App) logf(level, format string, args ...any) {
 // Start begins process monitoring and the pipe server.
 func (a *App) Start() {
 	a.logf("info", "hlauncher started; monitoring for Battle.net / StarCraft")
+	a.initOverlay()
 	if !a.Paths.CheckDetectorExists() {
 		a.logf("warn", "detector asset missing: %s", a.Paths.DetectorPath)
 	}
@@ -744,6 +748,9 @@ func (a *App) Start() {
 
 // Stop halts monitoring, detection, room scanning, and the pipe server.
 func (a *App) Stop() {
+	if a.Overlay != nil {
+		a.Overlay.Close()
+	}
 	a.Mon.Stop()
 	if a.detectStop != nil {
 		close(a.detectStop)
