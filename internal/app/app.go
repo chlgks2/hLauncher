@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -92,6 +93,7 @@ type App struct {
 	inGameBase     uintptr              // cached address of the engine player array (fast re-read)
 	inGameStable   int                  // consecutive full scans with an unchanged count (to back off)
 	inGameCount    int                  // player count at the last full scan
+	inGameSince    time.Time            // when an array was first adopted for this match
 	ingamePrev     map[string]string    // key->name of the last in-game roster (drop detection)
 
 	pubParts  []roster.Participant // last roster published to the UI
@@ -395,6 +397,7 @@ func (a *App) scanRoom() roster.State {
 	if !st.StarCraft.Running {
 		a.mu.Lock()
 		a.lastLobby, a.lastInGame, a.ingamePrev, a.inGameBase, a.inGameStable, a.inGameCount = nil, nil, nil, 0, 0, 0 // game gone: drop caches
+		a.inGameSince = time.Time{}
 		a.mu.Unlock()
 		return roster.StateIdle
 	}
@@ -404,6 +407,7 @@ func (a *App) scanRoom() roster.State {
 		a.mu.Lock()
 		a.seenBlack = make(map[string]bool)
 		a.lastLobby, a.lastInGame, a.ingamePrev, a.inGameBase, a.inGameStable, a.inGameCount = nil, nil, nil, 0, 0, 0
+		a.inGameSince = time.Time{}
 		a.mu.Unlock()
 	}
 
@@ -430,6 +434,7 @@ func (a *App) scanRoom() roster.State {
 		// stale in-game array cache so it can't resurface).
 		a.mu.Lock()
 		a.lastLobby, a.ingamePrev, a.inGameBase, a.inGameStable, a.inGameCount = nil, nil, 0, 0, 0
+		a.inGameSince = time.Time{}
 		a.mu.Unlock()
 		a.publishRoster(nil, false)
 	default:
@@ -519,15 +524,29 @@ func (a *App) inGameRoster(pid uint32) []roster.Participant {
 		}
 	}
 
-	// Periodic full re-scan to catch the fullest array copy.
+	// Periodic full re-scan to re-locate the array.
 	if base == 0 || rescanDue {
 		full, nb, _ := roster.InGameScan(pid, a.Identity)
 		a.mu.Lock()
 		a.lastInGameScan = time.Now()
-		chosen := fast
-		if len(full) >= len(fast) {
-			chosen = full
-			a.inGameBase = nb
+
+		// Trust the freshly located array. The cached one only wins in the one
+		// situation it is actually better: a match still loading, where a scan
+		// can momentarily see fewer players than the copy already held. That
+		// case has a signature — the fresh scan found nobody the cached array
+		// does not already list. An array holding players who are not in this
+		// match belongs to a previous one, however many names it has.
+		chosen := full
+		newBase := nb
+		switch {
+		case len(full) == 0:
+			chosen, newBase = fast, base // scan found nothing: keep what we have
+		case len(fast) > len(full) && a.stillConverging() && namesSubset(full, fast):
+			chosen, newBase = fast, base
+		}
+		a.inGameBase = newBase
+		if len(chosen) > 0 && a.inGameSince.IsZero() {
+			a.inGameSince = time.Now()
 		}
 		if len(chosen) == a.inGameCount {
 			a.inGameStable++
@@ -549,6 +568,30 @@ func (a *App) inGameRoster(pid uint32) []roster.Participant {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.lastInGame
+}
+
+// convergeWindow is how long after a match's array is first found the cached
+// copy may still be preferred over a freshly scanned one.
+const convergeWindow = 20 * time.Second
+
+// stillConverging reports whether this match is new enough that the player
+// array may not have settled yet. Caller holds a.mu.
+func (a *App) stillConverging() bool {
+	return a.inGameSince.IsZero() || time.Since(a.inGameSince) < convergeWindow
+}
+
+// namesSubset reports whether every player in sub also appears in super.
+func namesSubset(sub, super []roster.Participant) bool {
+	have := make(map[string]bool, len(super))
+	for _, p := range super {
+		have[strings.ToLower(p.Name)] = true
+	}
+	for _, p := range sub {
+		if !have[strings.ToLower(p.Name)] {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveTags re-fills battleTags on a snapshot from the current identity store.
