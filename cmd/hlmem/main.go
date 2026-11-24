@@ -107,6 +107,12 @@ func main() {
 			os.Exit(2)
 		}
 		locate(h, os.Args[3])
+	case "pattern":
+		if len(os.Args) < 4 {
+			fmt.Println("usage: hlmem <pid> pattern <b0,b1,?,b3,...>  (hex bytes, ?=wildcard)")
+			os.Exit(2)
+		}
+		patternSearch(h, os.Args[3])
 	case "cluster":
 		if len(os.Args) < 5 {
 			fmt.Println("usage: hlmem <pid> cluster <name1> <name2> [name3...]")
@@ -489,6 +495,58 @@ func showInGame(pid uint32) {
 	for _, p := range parts {
 		fmt.Printf("  슬롯%d  %-18s  %-8s  battleTag=%s\n", p.SlotID, p.Name, p.Race, p.BattleTag)
 	}
+}
+
+// patternSearch finds a byte pattern (with ? wildcards) across memory.
+func patternSearch(h windows.Handle, spec string) {
+	parts := strings.Split(spec, ",")
+	pat := make([]int, len(parts)) // -1 = wildcard
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "?" || p == "" {
+			pat[i] = -1
+			continue
+		}
+		v, err := strconv.ParseUint(p, 16, 8)
+		if err != nil {
+			fmt.Println("bad byte:", p)
+			return
+		}
+		pat[i] = int(v)
+	}
+	n := len(pat)
+	hits := 0
+	iterateRegions(h, func(base, size uintptr) {
+		const chunk = 1 << 20
+		for off := uintptr(0); off < size; off += chunk {
+			rd := chunk
+			if size-off < uintptr(rd) {
+				rd = int(size - off)
+			}
+			data := readMem(h, base+off, rd)
+			if data == nil {
+				continue
+			}
+			for i := 0; i+n <= len(data); i++ {
+				match := true
+				for j := 0; j < n; j++ {
+					if pat[j] >= 0 && int(data[i+j]) != pat[j] {
+						match = false
+						break
+					}
+				}
+				if match {
+					fmt.Printf("  %#012x  ", base+off+uintptr(i))
+					for j := 0; j < n; j++ {
+						fmt.Printf("%02x ", data[i+j])
+					}
+					fmt.Println()
+					hits++
+				}
+			}
+		}
+	})
+	fmt.Printf("총 %d개 hit\n", hits)
 }
 
 func listRegions(h windows.Handle) {
